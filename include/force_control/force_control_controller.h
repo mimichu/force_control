@@ -2,19 +2,14 @@
 #ifndef _FORCE_CONTROL_CONTROLLER_H_
 #define _FORCE_CONTROL_CONTROLLER_H_
 
-
-#include <fstream>
-#include <chrono>
-#include <deque>
-
-#include <Eigen/Geometry>
-
 #include <force_control/force_control_hardware.h>
 
-enum HYBRID_SERVO_MODE {
-  HS_STOP_AND_GO,
-  HS_CONTINUOUS
-};
+#include <Eigen/Geometry>
+#include <chrono>
+#include <deque>
+#include <fstream>
+
+enum HYBRID_SERVO_MODE { HS_STOP_AND_GO, HS_CONTINUOUS };
 
 /**
  * Class for performing 6-axis Cartesian hybrid force-velocity control. The
@@ -35,12 +30,12 @@ enum HYBRID_SERVO_MODE {
  *    from there, call reset() then updateAxis().
  *
  */
-class ForceControlController
-{
-public:
+class ForceControlController {
+ public:
   ForceControlController();
   ~ForceControlController();
-  bool init(ros::NodeHandle& root_nh, ForceControlHardware *hw, std::chrono::high_resolution_clock::time_point time0);
+  bool init(ros::NodeHandle &root_nh, ForceControlHardware *hw,
+            std::chrono::high_resolution_clock::time_point time0);
   ///
   /// Reset the internal state variables in the control law, including setting
   ///     all position offsets/force errors to zero. "previous pose command" is
@@ -101,17 +96,18 @@ public:
    * @return     true if success
    */
   bool ExecuteHFVC(const int n_af, const int n_av,
-      const Eigen::Matrix<double, 6, 6> &R_a, const double *pose_set,
-      const double *force_set,
-      HYBRID_SERVO_MODE mode, const int main_loop_rate, const double duration);
-
+                   const Eigen::Matrix<double, 6, 6> &R_a,
+                   const double *pose_set, const double *force_set,
+                   HYBRID_SERVO_MODE mode, const int main_loop_rate,
+                   const double duration);
 
   // parameters
-  double _dt; // used for integration/differentiation
+  double _dt;  // used for integration/differentiation
   Eigen::Matrix<double, 6, 6> _ToolStiffnessMatrix;
   Eigen::Matrix<double, 6, 6> _ToolDamping_coef;
   Eigen::Matrix<double, 6, 6> _ToolInertiaMatrix;
-  double _kForceControlPGainTran, _kForceControlIGainTran, _kForceControlDGainTran;
+  double _kForceControlPGainTran, _kForceControlIGainTran,
+      _kForceControlDGainTran;
   double _kForceControlPGainRot, _kForceControlIGainRot, _kForceControlDGainRot;
   Eigen::Matrix<double, 6, 1> _FC_I_limit_T_6D;
   // speed limits. mm/s, mm/s^2, rad/s, rad/s^2
@@ -124,7 +120,6 @@ public:
   Eigen::Matrix<double, 6, 6> _Tr_inv;
   Eigen::Matrix<double, 6, 6> _m_force_selection;
   Eigen::Matrix<double, 6, 6> _m_velocity_selection;
-
 
   // Controller internal
   double *_pose_sent_to_robot;
@@ -148,15 +143,13 @@ public:
   std::vector<double> _scale_vel_vector;
   double _var_force, _var_velocity;
 
-
-private:
+ private:
   ForceControlHardware *_hw;
 
   // misc
-  Clock::time_point _time0; ///< high resolution timer.
+  Clock::time_point _time0;  ///< high resolution timer.
   std::ofstream _file;
   bool _print_flag;
-
 };
 
-#endif // _FORCE_CONTROL_CONTROLLER_H_
+#endif  // _FORCE_CONTROL_CONTROLLER_H_
