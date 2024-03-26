@@ -1,3 +1,4 @@
+#include <RobotUtilities/TimerLinux.h>
 #include <RobotUtilities/utilities.h>
 #include <force_control/force_control_controller.h>
 
@@ -6,440 +7,249 @@
 #include <iostream>
 #include <string>
 
-typedef std::chrono::high_resolution_clock Clock;
-
 using RUT::Matrix4d;
 using RUT::Matrix6d;
 using RUT::MatrixXd;
 using RUT::Vector6d;
 
-using std::cout;
-using std::endl;
-using std::string;
-
 Eigen::IOFormat MatlabFmt(Eigen::StreamPrecision, 0, ", ", ";\n", "", "", "[",
                           "]");
 
-ForceControlController::ForceControlController() {
-  _pose_user_input = new double[7];
-  _wrench_Tr_set = Vector6d::Zero();
-  _Tr = Matrix6d::Identity();
-  _Tr_inv = Matrix6d::Identity();
-  _m_force_selection = Matrix6d::Zero();
-  _m_velocity_selection = Matrix6d::Identity();
+struct ForceControlController::Implementation {
+  Implementation();
+  ~Implementation();
+  bool initialize(
+      const ForceControlControllerConfig &force_control_controller_config,
+      const RUT::TimePoint &time_initial_0, const double *pose_current);
 
-  _pose_sent_to_robot = new double[7];
-  _v_W = Vector6d::Zero();
-  _v_T = Vector6d::Zero();
-  _wrench_T_Err = Vector6d::Zero();
-  _wrench_T_Err_I = Vector6d::Zero();
-  _SE3_WT_old = Matrix4d::Identity();
-  _SE3_WToffset = Matrix4d::Identity();
+  void setRobotStatus(const double *pose_WT, const double *wrench_WT);
+  void setRobotReference(const double *pose_WT, const double *wrench_WTr);
+  void setForceControlledAxis(const Matrix6d &Tr_new, int n_af);
+  int step(double *pose_to_send);
+  void reset();
+  void displayStates();
+
+  ForceControlControllerConfig config{};
+
+  // internal controller states
+  Matrix6d Tr{};
+  Matrix6d Tr_inv{};
+  Vector6d v_force_selection{};
+  Vector6d v_velocity_selection{};
+  Matrix6d diag_force_selection{};
+  Matrix6d diag_velocity_selection{};
+  Matrix6d m_anni{};
+
+  Matrix4d SE3_WTref{};
+  Matrix4d SE3_WT{};
+  Matrix4d SE3_TrefTadj{};
+  Matrix4d SE3_WTadj{};
+  Matrix4d SE3_TTadj{};
+  Matrix4d SE3_WT_cmd{};
+  Vector6d spt_TTadj{};
+  Vector6d spt_TTadj_new{};
+  Matrix6d Adj_WT{};
+  Matrix6d Adj_TW{};
+  Matrix6d Jac_v_spt{};
+  Matrix6d Jac_v_spt_inv{};
+
+  Vector6d v_spatial_WT{};
+  Vector6d v_body_WT{};
+  Vector6d v_body_WT_ref{};
+  Vector6d v_Tr{};
+  Vector6d vd_Tr{};
+  Vector6d wrench_T_Err_prev{};
+  Vector6d wrench_T_Err_I{};
+
+  Vector6d wrench_T_fb{};  // force feedback measured in tool frame
+  Vector6d wrench_Tr_cmd{};
+  Vector6d wrench_T_spring{};
+  Vector6d wrench_Tr_spring{};
+  Vector6d wrench_Tr_fb{};
+  Vector6d wrench_T_cmd{};
+  Vector6d wrench_T_Err{};
+  Vector6d wrench_T_PID{};
+  Vector6d wrench_Tr_PID{};
+  Vector6d wrench_Tr_Err{};
+  Vector6d wrench_Tr_damping{};
+  Vector6d wrench_Tr_All{};
+
+  // misc
+  RUT::Timer timer{};
+  std::ofstream log_file{};
+};
+
+ForceControlController::Implementation::Implementation() {}
+
+ForceControlController::Implementation::~Implementation() {
+  if (config.log_to_file) log_file.close();
 }
 
-ForceControlController::~ForceControlController() {
-  delete[] _pose_user_input;
-  delete[] _pose_sent_to_robot;
+bool ForceControlController::Implementation::initialize(
+    const ForceControlControllerConfig &force_control_controller_config,
+    const RUT::TimePoint &time_initial_0, const double *pose_current) {
+  std::cout << "[ForceControlController] Begin initialization.\n";
+  config = force_control_controller_config;
+  timer.tic(time_initial_0);
 
-  if (_print_flag) _file.close();
-}
+  reset();
 
-bool ForceControlController::init(
-    ros::NodeHandle &root_nh, ForceControlHardware *hw,
-    std::chrono::high_resolution_clock::time_point time0) {
-  cout << "[ForceControlController] Begin initialization.\n";
-  _hw = hw;
-  _time0 = time0;
-
-  /* use current state to initialize commands */
-  double wrench[6];
-  _hw->getState(_pose_user_input, wrench);
-  RUT::stream_array_in(cout, _pose_user_input, 7);
-  RUT::copyArray(_pose_user_input, _pose_sent_to_robot, 7);
-  _SE3_WT_old = RUT::posemm2SE3(_pose_user_input);
-
-  /**
-   * Force control parameters
-   */
-  double fHz;
-  root_nh.param(string("/force_control/main_loop_rate"), fHz, 500.0);
-  if (!root_nh.hasParam("/force_control/main_loop_rate"))
-    ROS_WARN_STREAM("Parameter [/force_control/main_loop_rate] not found");
-
-  // Spring-mass-damper coefficients
-  std::vector<double> Stiffness_matrix_diag_elements,
-      Inertia_matrix_diag_elements, Damping_matrix_diag_elements;
-  root_nh.getParam("/force_control/Stiffness_matrix_diag_elements",
-                   Stiffness_matrix_diag_elements);
-  root_nh.getParam("/force_control/Inertia_matrix_diag_elements",
-                   Inertia_matrix_diag_elements);
-  root_nh.getParam("/force_control/Damping_matrix_diag_elements",
-                   Damping_matrix_diag_elements);
-
-  if (!root_nh.hasParam("/force_control/Stiffness_matrix_diag_elements")) {
-    ROS_ERROR_STREAM(
-        "Parameter [/force_control/Stiffness_matrix_diag_elements] not found");
-    return false;
-  }
-  if (!root_nh.hasParam("/force_control/Inertia_matrix_diag_elements")) {
-    ROS_ERROR_STREAM(
-        "Parameter [/force_control/Inertia_matrix_diag_elements] not found");
-    return false;
-  }
-  if (!root_nh.hasParam("/force_control/Damping_matrix_diag_elements")) {
-    ROS_ERROR_STREAM(
-        "Parameter [/force_control/Damping_matrix_diag_elements] not found");
-    return false;
-  }
-
-  _dt = 1.0 / fHz;
-  _ToolStiffnessMatrix =
-      Vector6d(Stiffness_matrix_diag_elements.data()).asDiagonal();
-  _ToolDamping_coef =
-      Vector6d(Damping_matrix_diag_elements.data()).asDiagonal();
-  _ToolInertiaMatrix =
-      Vector6d(Inertia_matrix_diag_elements.data()).asDiagonal();
-
-  // force control gains
-  std::vector<double> FC_I_Limit_T_6D_elements;
-
-  root_nh.param(string("/force_control/FC_gains/PGainT"),
-                _kForceControlPGainTran, 0.0);
-  root_nh.param(string("/force_control/FC_gains/IGainT"),
-                _kForceControlIGainTran, 0.0);
-  root_nh.param(string("/force_control/FC_gains/DGainT"),
-                _kForceControlDGainTran, 0.0);
-  root_nh.param(string("/force_control/FC_gains/PGainR"),
-                _kForceControlPGainRot, 0.0);
-  root_nh.param(string("/force_control/FC_gains/IGainR"),
-                _kForceControlIGainRot, 0.0);
-  root_nh.param(string("/force_control/FC_gains/DGainR"),
-                _kForceControlDGainRot, 0.0);
-  root_nh.getParam("/force_control/FC_I_Limit_T_6D", FC_I_Limit_T_6D_elements);
-  if (!root_nh.hasParam("/force_control/FC_gains"))
-    ROS_WARN_STREAM(
-        "Parameter [/force_control/FC_gains] not found, using default.");
-  if (!root_nh.hasParam("/force_control/FC_I_Limit_T_6D")) {
-    ROS_ERROR_STREAM("Parameter [/force_control/FC_I_Limit_T_6D] not found");
-    return false;
-  }
-  _FC_I_limit_T_6D = Vector6d(FC_I_Limit_T_6D_elements.data());
-
-  // printing
-  string fullpath;
-  root_nh.param(string("/force_control/print_flag"), _print_flag, false);
-  root_nh.param(string("/force_control/file_path"), fullpath, string(" "));
-
-  if (!root_nh.hasParam("/force_control/print_flag"))
-    ROS_WARN_STREAM("Parameter [/force_control/print_flag] not found");
-  if (!root_nh.hasParam("/force_control/file_path"))
-    ROS_WARN_STREAM("Parameter [/force_control/file_path] not found");
-
-  /**
-   * Trapezodial motion planning
-   */
-  root_nh.param(string("/trapezodial/vel_max_translation"), _kVelMaxTrans, 0.0);
-  root_nh.param(string("/trapezodial/acc_max_translation"), _kAccMaxTrans, 0.0);
-  root_nh.param(string("/trapezodial/vel_max_rotation"), _kVelMaxRot, 0.0);
-  root_nh.param(string("/trapezodial/acc_max_rotation"), _kAccMaxRot, 0.0);
-  if (!root_nh.hasParam("/trapezodial/vel_max_translation"))
-    ROS_WARN_STREAM(
-        "Parameter [/trapezodial/vel_max_translation] not found, using "
-        "default: "
-        << _kVelMaxTrans);
-  if (!root_nh.hasParam("/trapezodial/acc_max_translation"))
-    ROS_WARN_STREAM(
-        "Parameter [/trapezodial/acc_max_translation] not found, using "
-        "default: "
-        << _kAccMaxTrans);
-  if (!root_nh.hasParam("/trapezodial/vel_max_rotation"))
-    ROS_WARN_STREAM(
-        "Parameter [/trapezodial/vel_max_rotation] not found, using default: "
-        << _kVelMaxRot);
-  if (!root_nh.hasParam("/trapezodial/acc_max_rotation"))
-    ROS_WARN_STREAM(
-        "Parameter [/trapezodial/acc_max_rotation] not found, using default: "
-        << _kAccMaxRot);
-
-  /**
-   * Experimental
-   */
-  root_nh.param(string("/activate_experimental_feature"),
-                _activate_experimental_feature, false);
-  if (!root_nh.hasParam("/activate_experimental_feature"))
-    ROS_WARN_STREAM(
-        "Parameter [/activate_experimental_feature] not found, using default: "
-        << _activate_experimental_feature);
-
-  if (_activate_experimental_feature) {
-    double pool_duration;
-    root_nh.param(string("/constraint_estimation/pool_duration"), pool_duration,
-                  0.5);
-    if (!root_nh.hasParam("/constraint_estimation/pool_duration"))
-      ROS_WARN_STREAM(
-          "Parameter [/constraint_estimation/pool_duration] not found, using "
-          "default: "
-          << pool_duration);
-    _pool_size = (int)round(pool_duration * fHz);
-
-    root_nh.getParam("/constraint_estimation/scale_force_vector",
-                     _scale_force_vector);
-    root_nh.getParam("/constraint_estimation/scale_vel_vector",
-                     _scale_vel_vector);
-    if (!root_nh.hasParam("/constraint_estimation/scale_force_vector"))
-      ROS_WARN_STREAM(
-          "Parameter [/constraint_estimation/scale_force_vector] not found!");
-    if (!root_nh.hasParam("/constraint_estimation/scale_vel_vector"))
-      ROS_WARN_STREAM(
-          "Parameter [/constraint_estimation/scale_vel_vector] not found!");
-
-    root_nh.param(string("/constraint_estimation/var_force"), _var_force, 0.5);
-    if (!root_nh.hasParam("/constraint_estimation/var_force"))
-      ROS_WARN_STREAM(
-          "Parameter [/constraint_estimation/var_force] not found, using "
-          "default: "
-          << _var_force);
-    root_nh.param(string("/constraint_estimation/var_velocity"), _var_velocity,
-                  0.5);
-    if (!root_nh.hasParam("/constraint_estimation/var_velocity"))
-      ROS_WARN_STREAM(
-          "Parameter [/constraint_estimation/var_velocity] not found, using "
-          "default: "
-          << _var_velocity);
-  }
-
-  if (_print_flag) {
-    _file.open(fullpath);
-    if (_file.is_open())
-      ROS_INFO_STREAM("[ForceControlController] file opened successfully."
-                      << endl);
+  if (config.log_to_file) {
+    log_file.open(config.log_file_path);
+    if (log_file.is_open())
+      std::cout << "[ForceControlController] log file opened successfully at "
+                << config.log_file_path << std::endl;
     else
-      ROS_ERROR_STREAM("[ForceControlController] Failed to open file." << endl);
+      std::cerr << "[ForceControlController] Failed to open log file at "
+                << config.log_file_path << std::endl;
   }
-  cout << "[ForceControlController] initialization is done." << endl;
   return true;
 }
 
-void ForceControlController::setPose(const double *pose) {
-  RUT::copyArray(pose, _pose_user_input, 7);
+void ForceControlController::Implementation::setRobotStatus(
+    const double *pose_WT, const double *wrench_WT) {
+  SE3_WT = RUT::posemm2SE3(pose_WT);
+  wrench_T_fb(0) = -wrench_WT[0];
+  wrench_T_fb(1) = -wrench_WT[1];
+  wrench_T_fb(2) = -wrench_WT[2];
+  wrench_T_fb(3) = -wrench_WT[3];
+  wrench_T_fb(4) = -wrench_WT[4];
+  wrench_T_fb(5) = -wrench_WT[5];
 }
 
-void ForceControlController::setForce(const double *force) {
-  _wrench_Tr_set(0) = force[0];
-  _wrench_Tr_set(1) = force[1];
-  _wrench_Tr_set(2) = force[2];
-  _wrench_Tr_set(3) = force[3];
-  _wrench_Tr_set(4) = force[4];
-  _wrench_Tr_set(5) = force[5];
+void ForceControlController::Implementation::setRobotReference(
+    const double *pose_WT, const double *wrench_WTr) {
+  SE3_WTref = RUT::posemm2SE3(pose_WT);
+
+  wrench_Tr_cmd(0) = wrench_WTr[0];
+  wrench_Tr_cmd(1) = wrench_WTr[1];
+  wrench_Tr_cmd(2) = wrench_WTr[2];
+  wrench_Tr_cmd(3) = wrench_WTr[3];
+  wrench_Tr_cmd(4) = wrench_WTr[4];
+  wrench_Tr_cmd(5) = wrench_WTr[5];
 }
 
-void ForceControlController::getPose(double *pose) { _hw->getPose(pose); }
+// After axis update, the goal pose with offset should be equal to current pose
+// in the new velocity controlled axes. To satisfy this requirement, we need to
+// change SE3_TrefTadj accordingly
+void ForceControlController::Implementation::setForceControlledAxis(
+    const Matrix6d &Tr_new, int n_af) {
+  v_force_selection = Vector6d::Zero();
+  v_velocity_selection = Vector6d::Ones();
+  for (int i = 0; i < n_af; ++i) {
+    v_force_selection(i) = 1;
+    v_velocity_selection(i) = 0;
+  }
+  diag_force_selection = v_force_selection.asDiagonal();
+  diag_velocity_selection = v_velocity_selection.asDiagonal();
 
-void ForceControlController::getToolVelocity(Eigen::Matrix<double, 6, 1> *v_T) {
-  *v_T = _v_T;
+  m_anni = diag_velocity_selection * Tr * Jac_v_spt;
+  spt_TTadj_new =
+      (Matrix6d::Identity() - RUT::pseudoInverse(m_anni, 1e-6) * m_anni) *
+      spt_TTadj;
+  SE3_TrefTadj = SE3_WT * RUT::spt2SE3(spt_TTadj_new) * RUT::SE3Inv(SE3_WTref);
+
+  // project these into force space
+  wrench_T_Err_I = Tr_inv * diag_force_selection * Tr * wrench_T_Err_I;
+  wrench_T_Err_prev = Tr_inv * diag_force_selection * Tr * wrench_T_Err_prev;
+
+  Tr = Tr_new;
+  Tr_inv = Tr.inverse();
+
+  if (std::isnan(SE3_TrefTadj(0, 0))) {
+    std::cerr << "\nThe computed offset has NaN." << std::endl;
+    std::cerr << "SE3_WT:\n" << SE3_WT.format(MatlabFmt) << std::endl;
+    std::cerr << "SE3_TTadj:\n" << SE3_TTadj.format(MatlabFmt) << std::endl;
+    std::cerr << "spt_TTadj:\n" << spt_TTadj.format(MatlabFmt) << std::endl;
+    std::cerr << "Jac_v_spt_inv:\n"
+              << Jac_v_spt_inv.format(MatlabFmt) << std::endl;
+    std::cerr << "Jac_v_spt:\n" << Jac_v_spt.format(MatlabFmt) << std::endl;
+    std::cerr << "m_anni:\n" << m_anni.format(MatlabFmt) << std::endl;
+    std::cerr << "spt_TTadj_new:\n"
+              << spt_TTadj_new.format(MatlabFmt) << std::endl;
+    std::cerr << "SE3_TrefTadj:\n"
+              << SE3_TrefTadj.format(MatlabFmt) << std::endl;
+    std::cerr << "\nNow paused at setForceControlledAxis()";
+    getchar();
+  }
 }
 
-bool ForceControlController::getToolWrench(
-    Eigen::Matrix<double, 6, 1> *wrench) {
-  double wrench_array[6];
-  bool safety = _hw->getWrench(wrench_array);
-  for (int i = 0; i < 6; i++) (*wrench)[i] = wrench_array[i];
-  return safety;
-}
-
+// clang-format off
 /*
  *
     force control law
-        Frames/spaces:
+        Frames:
             W: world frame
             T: current tool frame
-            So: set tool frame with offset
-            Tf: transformed generalized space
+            Tr: transformed generalized space
+        Frame suffixes
+            fb: feedback (default, often omitted)
+            ref: user provided reference, target
+            adj: offset adjusted (command tool frame)
+            cmd: output command, to be sent to the robot
         Quantities:
             SE3: 4x4 homogeneous coordinates
             se3: 6x1 twist coordinate of SE3
-            spt: 6x1 special twist: 3x1 position, 3x1 exponential coordinate for
- rotation td: 6x1 time derivative of twist. v: 6x1 velocity, either spatial or
- body wrench: 6x1 wrench. Makes work with body velocity
+            spt: 6x1 special twist: 3x1 position, 3x1 exponential coordinate for rotation
+            td: 6x1 time derivative of twist.
+            v: 6x1 velocity measured in an inertia frame.
+              v_body: body velocity.
+              v_spatial: spatial velocity.
+            wrench: 6x1 wrench. Makes work with body velocity
+            Jac_v_spt: 6x6 jacobian from body velocity to spt:
+                Jac_v_spt * body velocity = spt time derivative
+            Tr: 6x6 transformation matrix. Describes the force-velocity decomposition
  *
  */
-int ForceControlController::update() {
-  double pose_fb[7];
-  double wrench_fb[6];
-  // 0: no error. 1: still waiting for new data. 2: dead stream.
-  //      *             3: force is too big
-  int force_feedback_code;
-  while (true) {
-    force_feedback_code = _hw->getState(pose_fb, wrench_fb);
-    if (force_feedback_code == 0) {
-      // no error, use this data
-      break;
-    } else {
-      // dangerous, stop execution
-      return force_feedback_code;
-    }
-  }
-  printf("    F fb: %.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\n", wrench_fb[0],
-         wrench_fb[1], wrench_fb[2], wrench_fb[3], wrench_fb[4], wrench_fb[5]);
-
+// clang-format on
+int ForceControlController::Implementation::step(double *pose_to_send) {
   // ----------------------------------------
   //  Compute Forces in Generalized space
   // ----------------------------------------
-  /*  Spring forces  (using stiffness)   */
-  // Pose Error
-  Matrix4d SE3_WTSet;
-  SE3_WTSet = RUT::posemm2SE3(_pose_user_input);
+  /* Position updates */
+  SE3_WTadj = SE3_TrefTadj * SE3_WTref;
+  SE3_TTadj = RUT::SE3Inv(SE3_WT) * SE3_WTadj;  // aka SE3_S_err
+  spt_TTadj = RUT::SE32spt(SE3_TTadj);
 
-  Matrix4d SE3_WSo;
-  SE3_WSo = _SE3_WToffset * SE3_WTSet;
+  Jac_v_spt_inv = RUT::JacobianSpt2BodyV(SE3_WT.block<3, 3>(0, 0));
+  Jac_v_spt = Jac_v_spt_inv.inverse();
 
-  Matrix4d SE3_WT_fb, SE3_TSo;
-  SE3_WT_fb = RUT::posemm2SE3(pose_fb);
-  SE3_TSo = RUT::SE3Inv(SE3_WT_fb) * SE3_WSo;  // aka SE3_S_err
+  Adj_WT = RUT::SE32Adj(SE3_WT);
+  Adj_TW = RUT::SE32Adj(RUT::SE3Inv(SE3_WT));
 
-  Vector6d spt_TSo;
-  spt_TSo = RUT::SE32spt(SE3_TSo);
+  /* Velocity updates */
+  v_body_WT = Adj_TW * v_spatial_WT;
+  v_Tr = Tr * v_body_WT;
 
-  // Jac0 * body velocity = spt time derivative
-  Matrix6d Jac0, Jac0_inv;
-  Jac0_inv = RUT::JacobianSpt2BodyV(SE3_WT_fb.block<3, 3>(0, 0));
-  Jac0 = Jac0_inv.inverse();
+  /* Wrench updates */
+  wrench_T_spring = Jac_v_spt * config.compliance6d.stiffness * spt_TTadj;
+  wrench_Tr_spring = Tr * wrench_T_spring;
 
-  // elastic wrench
-  Vector6d wrench_T_spring;
-  wrench_T_spring = Jac0 * _ToolStiffnessMatrix * spt_TSo;
+  /* Force error, PID force control */
+  wrench_T_cmd = Tr_inv * wrench_Tr_cmd;
+  wrench_T_Err = wrench_T_cmd - wrench_T_fb;
+  wrench_T_Err_I += wrench_T_Err;
+  RUT::truncate6d(&wrench_T_Err_I, -config.direct_force_control_I_limit,
+                  config.direct_force_control_I_limit);
 
-  /*  Force feedback  */
-  // note: the minus sign here make the physical meaning of the force correct:
-  //      the force being acted on the environment from the robot
-  Vector6d wrench_T_fb;  // force feedback measured in tool frame
-  for (int i = 0; i < 6; ++i) wrench_T_fb(i) = -wrench_fb[i];
-
-  /* velocity */
-  Matrix6d Adj_WT, Adj_TW;
-  Adj_WT = RUT::SE32Adj(SE3_WT_fb);
-  Adj_TW = RUT::SE32Adj(RUT::SE3Inv(SE3_WT_fb));
-  _v_T = Adj_TW * _v_W;
-  Vector6d v_Tr;
-  v_Tr = _Tr * _v_T;
-
-  /* Experimental */
-  if (_activate_experimental_feature) {
-    _f_queue.push_front(-wrench_T_fb);
-    _v_queue.push_front(_v_T);
-    // scaling
-    for (int i = 0; i < 6; ++i) {
-      _f_queue[0][i] = _f_queue[0][i] * _scale_force_vector[i];
-      _v_queue[0][i] = _v_queue[0][i] * _scale_vel_vector[i];
-    }
-    _f_weights.push_front(1.0);
-    _v_weights.push_front(1.0);
-    _f_probability.push_front(0.0);
-    _v_probability.push_front(0.0);
-    if (_f_queue.size() > _pool_size) {
-      _f_queue.pop_back();
-      _v_queue.pop_back();
-      _f_weights.pop_back();
-      _v_weights.pop_back();
-      _f_probability.pop_back();
-      _v_probability.pop_back();
-    }
-
-    /* Update weights of data
-     * Rules
-     *  Force and velocity should be orthogonal. The data are not orthogonal
-     *  because of noise. Assume a distribution of noise, we can compute the
-     *  probability of having current feedback given an old data. We use this
-     *  probability to update the weights of old data.
-     *
-     * Every time we receive a new data, do the following:
-     * 1. Set the weight of the new data = 1
-     * 2. Check each old velocity data:
-     *   1. Discount velocity data if it is not orthogonal with the force
-     * 3. Check each old force data:
-     *   1. Discount force data if it is not orthogonal with the velocity and
-     *      not aligned with new force
-     */
-
-    double norm_new_force = _f_queue[0].norm();
-    double norm_new_velocity = _v_queue[0].norm();
-    double kVarRatio = _var_force / _var_velocity;
-    double p_force_max = RUT::Gaussian(0, _var_force);
-
-    double dot = abs(_v_queue[0].dot(_f_queue[0]));
-    double norm_force = _f_queue[0].norm();
-    double distance_force =
-        (norm_new_velocity > 1e-7) ? dot / norm_new_velocity : 0;
-    double distance_velocity = (norm_force > 1e-7) ? dot / norm_force : 0;
-    double distance =  // keep the same variance between f and v
-        std::min(distance_force, distance_velocity * kVarRatio);
-    double p1 = RUT::Gaussian(distance, _var_force) / p_force_max;  // normalize
-
-    for (int i = 1; i < _f_queue.size(); ++i) {
-      // check all the velocity data
-      dot = abs(_f_queue[0].dot(_v_queue[i]));
-      double norm_velocity = _v_queue[i].norm();
-      distance_force = (norm_velocity > 1e-7) ? dot / norm_velocity : 0;
-      distance_velocity = (norm_new_force > 1e-7) ? dot / norm_new_force : 0;
-      distance =  // keep the same variance between f and v
-          std::min(distance_force, distance_velocity * kVarRatio);
-      double p =
-          RUT::Gaussian(distance, _var_force) / p_force_max;  // normalize
-      double k = 1.0 / (1.0 + exp(-15.0 * (p - 0.5)));
-      _v_probability[i] = p;
-      _v_weights[i] *= k;
-
-      // check all the force data
-      dot = abs(_v_queue[0].dot(_f_queue[i]));
-      double norm_force = _f_queue[i].norm();
-      distance_force = (norm_new_velocity > 1e-7) ? dot / norm_new_velocity : 0;
-      distance_velocity = (norm_force > 1e-7) ? dot / norm_force : 0;
-      distance =  // keep the same variance between f and v
-          std::min(distance_force, distance_velocity * kVarRatio);
-      double p0 =
-          RUT::Gaussian(distance, _var_force) / p_force_max;  // normalize
-
-      p = p0 + (1 - p1) * (1 - p0);
-
-      k = 1.0 / (1.0 + exp(-15.0 * (p - 0.5)));
-      _f_probability[i] = p;
-      _f_weights[i] *= k;
-    }
-  }
-
-  /* transformation from Tool wrench to
-          transformed space  */
-  Vector6d wrench_Tr_spring, wrench_Tr_fb;
-  wrench_Tr_spring = _Tr * wrench_T_spring;
-
-  /*  Force error, PID force control */
-  Vector6d wrench_T_Set, wrench_T_Err;
-  wrench_T_Set = _Tr_inv * _wrench_Tr_set;
-  wrench_T_Err = wrench_T_Set - wrench_T_fb;
-  _wrench_T_Err_I += wrench_T_Err;
-  RUT::truncate6d(&_wrench_T_Err_I, -_FC_I_limit_T_6D, _FC_I_limit_T_6D);
-
-  Vector6d wrench_T_PID;
   wrench_T_PID.head(3) =
-      _kForceControlPGainTran * wrench_T_Err.head(3) +
-      _kForceControlIGainTran * _wrench_T_Err_I.head(3) +
-      _kForceControlDGainTran * (wrench_T_Err.head(3) - _wrench_T_Err.head(3));
+      config.direct_force_control_gains.P_trans * wrench_T_Err.head(3) +
+      config.direct_force_control_gains.I_trans * wrench_T_Err_I.head(3) +
+      config.direct_force_control_gains.D_trans *
+          (wrench_T_Err.head(3) - wrench_T_Err_prev.head(3));
   wrench_T_PID.tail(3) =
-      _kForceControlPGainRot * wrench_T_Err.tail(3) +
-      _kForceControlIGainRot * _wrench_T_Err_I.tail(3) +
-      _kForceControlDGainRot * (wrench_T_Err.tail(3) - _wrench_T_Err.tail(3));
-  Vector6d wrench_Tr_PID;
-  wrench_Tr_PID = _Tr * wrench_T_PID;
-  _wrench_T_Err = wrench_T_Err;
-  Vector6d wrench_Tr_Err;
-  wrench_Tr_Err = _Tr * wrench_T_Err;
+      config.direct_force_control_gains.P_rot * wrench_T_Err.tail(3) +
+      config.direct_force_control_gains.I_rot * wrench_T_Err_I.tail(3) +
+      config.direct_force_control_gains.D_rot *
+          (wrench_T_Err.tail(3) - wrench_T_Err_prev.tail(3));
+  wrench_Tr_PID = Tr * wrench_T_PID;
+  wrench_T_Err_prev = wrench_T_Err;
+  wrench_Tr_Err = Tr * wrench_T_Err;
 
-  Vector6d wrench_Tr_damping;
-  wrench_Tr_damping = -_Tr * _ToolDamping_coef * _v_T;
+  wrench_Tr_damping = -Tr * config.compliance6d.damping * v_body_WT;
 
-  Vector6d wrench_Tr_All;
-  wrench_Tr_All = _m_force_selection * (wrench_Tr_spring + wrench_Tr_Err +
-                                        wrench_Tr_PID + wrench_Tr_damping);
+  wrench_Tr_All = diag_force_selection * (wrench_Tr_spring + wrench_Tr_Err +
+                                          wrench_Tr_PID + wrench_Tr_damping);
 
   // ----------------------------------------
   //  force to velocity
@@ -456,223 +266,231 @@ int ForceControlController::update() {
   //  Newton's law in transformed space
   //      TW=TMTinv Tvd
   //      W_Tr = TMTinv vd_Tr
-  Matrix6d Tinv;
-  Tinv = _Tr.inverse();
-  Vector6d vd_Tr;
-  vd_Tr = (_Tr * _ToolInertiaMatrix * Tinv).fullPivLu().solve(wrench_Tr_All);
+  vd_Tr = (Tr * config.compliance6d.inertia * Tr_inv)
+              .fullPivLu()
+              .solve(wrench_Tr_All);
 
-  // integration
-  // right now the velocity vector _vd_Tr only contains force command
-  v_Tr += _dt * vd_Tr;
-  v_Tr = _m_force_selection * v_Tr;
+  // Velocity in the force-controlled direction: integrate acc computed from
+  // Newton's law
+  v_Tr += config.dt * vd_Tr;
+  v_Tr = diag_force_selection *
+         v_Tr;  // clean up velocity in the velocity-controlled direction
 
-  /* Velocity command */
-  Vector6d v_T_command;
-  v_T_command = Jac0_inv * spt_TSo / _dt;
-  v_Tr += _m_velocity_selection * _Tr * v_T_command;
-  _v_W = Adj_WT * Tinv * v_Tr;
+  // Velocity in the velocity-controlled direction: derive from reference pose
+  v_body_WT_ref = Jac_v_spt_inv * spt_TTadj /
+                  config.dt;  // reference velocity, derived from reference pose
+  v_Tr += diag_velocity_selection * Tr * v_body_WT_ref;
+
+  v_spatial_WT = Adj_WT * Tr_inv * v_Tr;
 
   // ----------------------------------------
   //  velocity to pose
   // ----------------------------------------
-  Matrix4d SE3_WT_command;
-  SE3_WT_command = SE3_WT_fb + RUT::wedge6(_v_W) * SE3_WT_fb * _dt;
-  RUT::SE32Posemm(SE3_WT_command, _pose_sent_to_robot);
+  SE3_WT_cmd = SE3_WT + RUT::wedge6(v_spatial_WT) * SE3_WT * config.dt;
+  RUT::SE32Posemm(SE3_WT_cmd, pose_to_send);
 
-  Clock::time_point timenow_clock = Clock::now();
-  double timenow = double(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                              timenow_clock - _time0)
-                              .count()) /
-                   1e6;  // milli second
+  double timenow = timer.toc_ms();
 
-  if (std::isnan(_pose_sent_to_robot[0])) {
-    cout << "==================== Temp variables: =====================\n";
-    cout << "pose_fb: ";
-    RUT::stream_array_in(cout, pose_fb, 7);
-    cout << "\n_pose_sent_to_robot: ";
-    RUT::stream_array_in(cout, _pose_sent_to_robot, 7);
-    cout << "\nwrench_Tr_spring: \n"
-         << wrench_Tr_spring.format(MatlabFmt) << endl;
-    // cout << "wrench_T_fb: \n" << wrench_T_fb.format(MatlabFmt) << endl;
-    // cout << "wrench_Tr_fb: \n" << wrench_Tr_fb.format(MatlabFmt) << endl;
-    // cout << "_wrench_Tr_set: \n" << _wrench_Tr_set.format(MatlabFmt) << endl;
-    cout << "wrench_T_PID: \n" << wrench_T_PID.format(MatlabFmt) << endl;
-    cout << "wrench_Tr_damping: \n"
-         << wrench_Tr_damping.format(MatlabFmt) << endl;
-    cout << "wrench_Tr_Err: \n" << wrench_Tr_Err.format(MatlabFmt) << endl;
-    cout << "wrench_Tr_All: \n" << wrench_Tr_All.format(MatlabFmt) << endl;
-    cout << "vd_Tr: \n" << vd_Tr.format(MatlabFmt) << endl;
-    cout << "v_Tr: \n" << v_Tr.format(MatlabFmt) << endl;
-    cout << "v_T_command: \n" << v_T_command.format(MatlabFmt) << endl;
-    cout << "_v_W: \n" << _v_W.format(MatlabFmt) << endl;
-    cout << "SE3_WT_fb: \n" << SE3_WT_fb.format(MatlabFmt) << endl;
-    cout << "SE3_WT_command: \n" << SE3_WT_command.format(MatlabFmt) << endl;
+  if (std::isnan(pose_to_send[0])) {
+    std::cerr << "==================== pose is nan. =====================\n";
     displayStates();
-    cout << "Press ENTER to continue..." << endl;
+    std::cerr << "Press ENTER to continue..." << std::endl;
     getchar();
+    return false;
   }
 
-  _hw->setPose(_pose_sent_to_robot);
-
-  // cout << "[ForceControlController] Update at "  << timenow << endl;
-  if (_print_flag) {
-    _file << timenow << " ";
-    RUT::stream_array_in(_file, _pose_user_input, 7);
-    RUT::stream_array_in(_file, pose_fb, 7);
-    RUT::stream_array_in(_file, wrench_fb, 6);
-    RUT::stream_array_in6d(_file, wrench_Tr_All);
-    RUT::stream_array_in(_file, _pose_sent_to_robot, 7);
-    _file << endl;
+  std::cout << "[ForceControlController] Update at " << timenow << " ms."
+            << std::endl;
+  if (config.log_to_file) {
+    log_file << timenow << " ";
+    RUT::stream_array_in(log_file, SE3_WT.block<3, 1>(0, 3), 3);
+    RUT::stream_array_in(log_file, SE3_WTref.block<3, 1>(0, 3), 3);
+    RUT::stream_array_in6d(log_file, wrench_T_fb);
+    RUT::stream_array_in6d(log_file, wrench_Tr_All);
+    RUT::stream_array_in(log_file, pose_to_send, 7);
+    log_file << std::endl;
   }
-  return force_feedback_code;
+  return true;
 }
 
-// After axis update, the goal pose with offset should not have error in
-// velocity controlled axes of the new axes. To satisfy this requirement,
-// we need to change _SE3_WToffset accordingly
-void ForceControlController::updateAxis(const Matrix6d &Tr, int n_af) {
-  Matrix4d SE3_WTSet;
-  SE3_WTSet = RUT::posemm2SE3(_pose_user_input);
+void ForceControlController::Implementation::reset() {
+  Tr = Matrix6d::Identity();
+  Tr_inv = Matrix6d::Identity();
+  v_force_selection = Vector6d::Zero();
+  v_velocity_selection = Vector6d::Ones();
+  diag_force_selection = Matrix6d::Zero();
+  diag_velocity_selection = Matrix6d::Identity();
+  m_anni = Matrix6d::Identity();
 
-  Matrix4d SE3_WSo;
-  SE3_WSo = _SE3_WToffset * SE3_WTSet;
+  SE3_WTref = Matrix4d::Identity();
+  SE3_WT = Matrix4d::Identity();
+  SE3_TrefTadj = Matrix4d::Identity();
+  SE3_WTadj = Matrix4d::Identity();
+  SE3_TTadj = Matrix4d::Identity();
+  SE3_WT_cmd = Matrix4d::Identity();
+  spt_TTadj = Vector6d::Zero();
+  spt_TTadj_new = Vector6d::Zero();
+  Adj_WT = Matrix6d::Identity();
+  Adj_TW = Matrix6d::Identity();
+  Jac_v_spt = Matrix6d::Identity();
+  Jac_v_spt_inv = Matrix6d::Identity();
 
-  Matrix4d SE3_WT_fb, SE3_TSo;
-  SE3_WT_fb = RUT::posemm2SE3(_pose_sent_to_robot);
-  SE3_TSo = RUT::SE3Inv(SE3_WT_fb) * SE3_WSo;  // aka SE3_S_err
+  v_spatial_WT = Vector6d::Zero();
+  v_body_WT = Vector6d::Zero();
+  v_body_WT_ref = Vector6d::Zero();
+  v_Tr = Vector6d::Zero();
+  vd_Tr = Vector6d::Zero();
+  wrench_T_Err_prev = Vector6d::Zero();
+  wrench_T_Err_I = Vector6d::Zero();
 
-  Vector6d spt_TSo;
-  spt_TSo = RUT::SE32spt(SE3_TSo);
-
-  Vector6d v_force_selection, v_velocity_selection;
-  v_force_selection << 0, 0, 0, 0, 0, 0;
-  v_velocity_selection << 1, 1, 1, 1, 1, 1;
-  for (int i = 0; i < n_af; ++i) {
-    v_force_selection(i) = 1;
-    v_velocity_selection(i) = 0;
-  }
-
-  _m_force_selection = v_force_selection.asDiagonal();
-  _m_velocity_selection = v_velocity_selection.asDiagonal();
-
-  Matrix6d Jac0, Jac0_inv;
-  Jac0_inv = RUT::JacobianSpt2BodyV(SE3_WT_fb.block<3, 3>(0, 0));
-  Jac0 = Jac0_inv.inverse();
-
-  MatrixXd m_anni = _m_velocity_selection * Tr * Jac0;
-  Vector6d spt_TSo_new =
-      (Matrix6d::Identity() - RUT::pseudoInverse(m_anni, 1e-6) * m_anni) *
-      spt_TSo;
-  // update offset
-  _SE3_WToffset =
-      SE3_WT_fb * RUT::spt2SE3(spt_TSo_new) * RUT::SE3Inv(SE3_WTSet);
-
-  // project these into force space
-  _wrench_T_Err_I = _Tr_inv * _m_force_selection * Tr * _wrench_T_Err_I;
-  _wrench_T_Err = _Tr_inv * _m_force_selection * Tr * _wrench_T_Err;
-
-  _SE3_WT_old = SE3_WT_fb;
-  _Tr = Tr;
-  _Tr_inv = _Tr.inverse();
-
-  if (std::isnan(_SE3_WToffset(0, 0))) {
-    cout << "SE3_WT_fb:\n" << SE3_WT_fb.format(MatlabFmt) << endl;
-    cout << "SE3_TSo:\n" << SE3_TSo.format(MatlabFmt) << endl;
-    cout << "spt_TSo:\n" << spt_TSo.format(MatlabFmt) << endl;
-    cout << "Jac0_inv:\n" << Jac0_inv.format(MatlabFmt) << endl;
-    cout << "Jac0:\n" << Jac0.format(MatlabFmt) << endl;
-    cout << "m_anni:\n" << m_anni.format(MatlabFmt) << endl;
-    cout << "spt_TSo_new:\n" << spt_TSo_new.format(MatlabFmt) << endl;
-    cout << "_SE3_WToffset:\n" << _SE3_WToffset.format(MatlabFmt) << endl;
-    cout << "\nNow paused at updateAxis()";
-    getchar();
-  }
+  wrench_T_fb = Vector6d::Zero();
+  wrench_Tr_cmd = Vector6d::Zero();
+  wrench_T_spring = Vector6d::Zero();
+  wrench_Tr_spring = Vector6d::Zero();
+  wrench_Tr_fb = Vector6d::Zero();
+  wrench_T_cmd = Vector6d::Zero();
+  wrench_T_Err = Vector6d::Zero();
+  wrench_T_PID = Vector6d::Zero();
+  wrench_Tr_PID = Vector6d::Zero();
+  wrench_Tr_Err = Vector6d::Zero();
+  wrench_Tr_damping = Vector6d::Zero();
+  wrench_Tr_All = Vector6d::Zero();
 }
 
-bool ForceControlController::ExecuteHFVC(
-    const int n_af, const int n_av, const Matrix6d &R_a, const double *pose_set,
-    const double *force_set, HYBRID_SERVO_MODE mode, const int main_loop_rate,
-    const double duration) {
-  assert(n_af + n_av == 6);
-  if (mode == HS_STOP_AND_GO) {
-    reset();
-  }
-  updateAxis(R_a, n_af);
-  setForce(force_set);
-
-  // get current pose for motion planning
-  double pose_fb[7];
-  if (mode == HS_STOP_AND_GO)
-    _hw->getPose(pose_fb);
-  else
-    RUT::copyArray(_pose_user_input, pose_fb, 7);
-
-  /* Motion Planning */
-  int num_of_steps = round(double(main_loop_rate) * duration);
-  MatrixXd pose_traj;
-  RUT::MotionPlanningLinear(pose_fb, pose_set, num_of_steps, &pose_traj);
-  // MotionPlanningTrapezodial(pose_fb, pose_set, _kAccMaxTrans, _kVelMaxTrans,
-  //         _kAccMaxRot, _kVelMaxRot, (double)main_loop_rate, &pose_traj);
-
-  /* Execute the motion plan */
-  ros::Rate pub_rate(main_loop_rate);
-  int b_unsafe = false;
-  for (int i = 0; i < num_of_steps; ++i) {
-    // cout << "[Hybrid] update step " << i << " of " << num_of_steps;
-    // cout << ", pose sent: " << pose_traj(0, i) << ", " << pose_traj(1, i);
-    // cout << ", " << pose_traj(2, i) << endl;
-    setPose(pose_traj.col(i).data());
-    // !! after setPose, must call update before updateAxis
-    // so as to set correct value for pose_command
-    b_unsafe = update();
-    if (b_unsafe != 0) {
-      ROS_ERROR_STREAM(
-          "[force_control] Unsafe force feedback! error code: " << b_unsafe);
-      break;
-    }
-    pub_rate.sleep();
-  }
-  return b_unsafe;
+void ForceControlController::Implementation::displayStates() {
+  std::cout << "================= Parameters ================== " << std::endl;
+  std::cout << "dt: " << config.dt << std::endl;
+  std::cout << "log_to_file: " << config.log_to_file << std::endl;
+  std::cout << "log_file_path: " << config.log_file_path << std::endl;
+  std::cout << "compliance6d.stiffness: "
+            << config.compliance6d.stiffness.format(MatlabFmt) << std::endl;
+  std::cout << "compliance6d.damping: "
+            << config.compliance6d.damping.format(MatlabFmt) << std::endl;
+  std::cout << "compliance6d.inertia: "
+            << config.compliance6d.inertia.format(MatlabFmt) << std::endl;
+  std::cout << "direct_force_control_gains.P_trans: "
+            << config.direct_force_control_gains.P_trans << std::endl;
+  std::cout << "direct_force_control_gains.I_trans: "
+            << config.direct_force_control_gains.I_trans << std::endl;
+  std::cout << "direct_force_control_gains.D_trans: "
+            << config.direct_force_control_gains.D_trans << std::endl;
+  std::cout << "direct_force_control_gains.P_rot: "
+            << config.direct_force_control_gains.P_rot << std::endl;
+  std::cout << "direct_force_control_gains.I_rot: "
+            << config.direct_force_control_gains.I_rot << std::endl;
+  std::cout << "direct_force_control_gains.D_rot: "
+            << config.direct_force_control_gains.D_rot << std::endl;
+  std::cout << "direct_force_control_I_limit: "
+            << config.direct_force_control_I_limit.format(MatlabFmt)
+            << std::endl;
+  std::cout << "motion_planning_parameters.max_translation_vel_mm_s: "
+            << config.motion_planning_parameters.max_translation_vel_mm_s
+            << std::endl;
+  std::cout << "motion_planning_parameters.max_translation_acc_mm_s2: "
+            << config.motion_planning_parameters.max_translation_acc_mm_s2
+            << std::endl;
+  std::cout << "motion_planning_parameters.max_rotation_vel_rad_s: "
+            << config.motion_planning_parameters.max_rotation_vel_rad_s
+            << std::endl;
+  std::cout << "motion_planning_parameters.max_rotation_acc_rad_s2: "
+            << config.motion_planning_parameters.max_rotation_acc_rad_s2
+            << std::endl;
+  std::cout << "================= Internal states ================== "
+            << std::endl;
+  std::cout << "Tr: " << Tr.format(MatlabFmt) << std::endl;
+  std::cout << "Tr_inv: " << Tr_inv.format(MatlabFmt) << std::endl;
+  std::cout << "v_force_selection: " << v_force_selection.format(MatlabFmt)
+            << std::endl;
+  std::cout << "v_velocity_selection: "
+            << v_velocity_selection.format(MatlabFmt) << std::endl;
+  std::cout << "diag_force_selection: "
+            << diag_force_selection.format(MatlabFmt) << std::endl;
+  std::cout << "diag_velocity_selection: "
+            << diag_velocity_selection.format(MatlabFmt) << std::endl;
+  std::cout << "m_anni: " << m_anni.format(MatlabFmt) << std::endl;
+  std::cout << "SE3_WTref: " << SE3_WTref.format(MatlabFmt) << std::endl;
+  std::cout << "SE3_WT: " << SE3_WT.format(MatlabFmt) << std::endl;
+  std::cout << "SE3_TrefTadj: " << SE3_TrefTadj.format(MatlabFmt) << std::endl;
+  std::cout << "SE3_WTadj: " << SE3_WTadj.format(MatlabFmt) << std::endl;
+  std::cout << "SE3_TTadj: " << SE3_TTadj.format(MatlabFmt) << std::endl;
+  std::cout << "SE3_WT_cmd: " << SE3_WT_cmd.format(MatlabFmt) << std::endl;
+  std::cout << "spt_TTadj: " << spt_TTadj.format(MatlabFmt) << std::endl;
+  std::cout << "spt_TTadj_new: " << spt_TTadj_new.format(MatlabFmt)
+            << std::endl;
+  std::cout << "Adj_WT: " << Adj_WT.format(MatlabFmt) << std::endl;
+  std::cout << "Adj_TW: " << Adj_TW.format(MatlabFmt) << std::endl;
+  std::cout << "Jac_v_spt: " << Jac_v_spt.format(MatlabFmt) << std::endl;
+  std::cout << "Jac_v_spt_inv: " << Jac_v_spt_inv.format(MatlabFmt)
+            << std::endl;
+  std::cout << "v_spatial_WT: " << v_spatial_WT.format(MatlabFmt) << std::endl;
+  std::cout << "v_body_WT: " << v_body_WT.format(MatlabFmt) << std::endl;
+  std::cout << "v_body_WT_ref: " << v_body_WT_ref.format(MatlabFmt)
+            << std::endl;
+  std::cout << "v_Tr: " << v_Tr.format(MatlabFmt) << std::endl;
+  std::cout << "vd_Tr: " << vd_Tr.format(MatlabFmt) << std::endl;
+  std::cout << "wrench_T_Err_prev: " << wrench_T_Err_prev.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_T_Err_I: " << wrench_T_Err_I.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_T_fb: " << wrench_T_fb.format(MatlabFmt) << std::endl;
+  std::cout << "wrench_Tr_cmd: " << wrench_Tr_cmd.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_T_spring: " << wrench_T_spring.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_Tr_spring: " << wrench_Tr_spring.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_Tr_fb: " << wrench_Tr_fb.format(MatlabFmt) << std::endl;
+  std::cout << "wrench_T_cmd: " << wrench_T_cmd.format(MatlabFmt) << std::endl;
+  std::cout << "wrench_T_Err: " << wrench_T_Err.format(MatlabFmt) << std::endl;
+  std::cout << "wrench_T_PID: " << wrench_T_PID.format(MatlabFmt) << std::endl;
+  std::cout << "wrench_Tr_PID: " << wrench_Tr_PID.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_Tr_Err: " << wrench_Tr_Err.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_Tr_damping: " << wrench_Tr_damping.format(MatlabFmt)
+            << std::endl;
+  std::cout << "wrench_Tr_All: " << wrench_Tr_All.format(MatlabFmt)
+            << std::endl;
 }
 
-// reset everytime you start from complete stop.
-// clear up internal states
-void ForceControlController::reset() {
-  _hw->getPose(_pose_sent_to_robot);
-  _hw->getPose(_pose_user_input);
-  _SE3_WT_old = RUT::posemm2SE3(_pose_sent_to_robot);
-  _SE3_WToffset = Matrix4d::Identity();
-  _v_W = Vector6d::Zero();
-  _v_T = Vector6d::Zero();
-  _wrench_T_Err = Vector6d::Zero();
-  _wrench_T_Err_I = Vector6d::Zero();
+ForceControlController::ForceControlController()
+    : m_impl{std::make_unique<Implementation>()} {}
+ForceControlController::~ForceControlController() = default;
+
+bool ForceControlController::init(const ForceControlControllerConfig &config,
+                                  const RUT::TimePoint &time0,
+                                  const double *pose_current) {
+  m_impl->initialize(config, time0, pose_current);
+
+  double *wrench_zero = new double[6];
+  for (int i = 0; i < 6; ++i) {
+    wrench_zero[i] = 0.;
+  }
+  double *pose_out = new double[6];
+  setRobotStatus(pose_current, wrench_zero);
+  setRobotReference(pose_current, wrench_zero);
+  step(pose_out);
+  setForceControlledAxis(Matrix6d::Identity(), 0);
+
+  std::cout << "[ForceControlController] initialization is done." << std::endl;
+  return true;
 }
 
-void ForceControlController::displayStates() {
-  using namespace std;
-  cout << "================= Parameters ================== " << endl;
-  cout << "_ToolStiffnessMatrix: \n"
-       << _ToolStiffnessMatrix.format(MatlabFmt) << endl;
-  cout << "_ToolDamping_coef: \n"
-       << _ToolDamping_coef.format(MatlabFmt) << endl;
-  cout << "_ToolInertiaMatrix: \n"
-       << _ToolInertiaMatrix.format(MatlabFmt) << endl;
-  cout << "================= Commands ================== " << endl;
-  cout << "_pose_user_input: ";
-  RUT::stream_array_in(cout, _pose_user_input, 7);
-  cout << "\n_Wrench_Tr_set: \n" << _wrench_Tr_set.format(MatlabFmt) << endl;
-  cout << "_Tr: \n" << _Tr.format(MatlabFmt) << endl;
-  cout << "_Tr_inv: \n" << _Tr_inv.format(MatlabFmt) << endl;
-  cout << "_m_force_selection: \n"
-       << _m_force_selection.format(MatlabFmt) << endl;
-  cout << "_m_velocity_selection: \n"
-       << _m_velocity_selection.format(MatlabFmt) << endl;
-  cout << "================= Internal states ================== " << endl;
-  cout << "_pose_sent_to_robot: ";
-  RUT::stream_array_in(cout, _pose_sent_to_robot, 7);
-  cout << "\n_SE3_WT_old: \n" << _SE3_WT_old.format(MatlabFmt) << endl;
-  cout << "_SE3_WToffset: \n" << _SE3_WToffset.format(MatlabFmt) << endl;
-  cout << "_v_W: \n" << _v_W.format(MatlabFmt) << endl;
-  cout << "_wrench_T_Err: \n" << _wrench_T_Err.format(MatlabFmt) << endl;
-  cout << "_wrench_T_Err_I: \n" << _wrench_T_Err_I.format(MatlabFmt) << endl;
+void ForceControlController::setRobotStatus(const double *pose_WT,
+                                            const double *wrench_WT) {
+  m_impl->setRobotStatus(pose_WT, wrench_WT);
+}
+
+void ForceControlController::setRobotReference(const double *pose_WT,
+                                               const double *wrench_WTr) {
+  m_impl->setRobotReference(pose_WT, wrench_WTr);
+}
+
+void ForceControlController::setForceControlledAxis(const Matrix6d &Tr_new,
+                                                    int n_af) {
+  m_impl->setForceControlledAxis(Tr_new, n_af);
+}
+
+int ForceControlController::step(double *pose_to_send) {
+  return m_impl->step(pose_to_send);
 }
