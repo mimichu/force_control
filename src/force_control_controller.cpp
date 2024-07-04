@@ -15,18 +15,17 @@ using RUT::Vector6d;
 Eigen::IOFormat MatlabFmt(Eigen::StreamPrecision, 0, ", ", ";\n", "", "", "[",
                           "]");
 
-struct ForceControlController::Implementation
-{
+struct ForceControlController::Implementation {
   Implementation();
   ~Implementation();
   bool initialize(
-      const ForceControlControllerConfig &force_control_controller_config,
-      const RUT::TimePoint &time_initial_0, const double *pose_current);
+      const ForceControlControllerConfig& force_control_controller_config,
+      const RUT::TimePoint& time_initial_0, const double* pose_current);
 
-  void setRobotStatus(const double *pose_WT, const double *wrench_WT);
-  void setRobotReference(const double *pose_WT, const double *wrench_WTr);
-  void setForceControlledAxis(const Matrix6d &Tr_new, int n_af);
-  int step(double *pose_to_send);
+  void setRobotStatus(const double* pose_WT, const double* wrench_WT);
+  void setRobotReference(const double* pose_WT, const double* wrench_WTr);
+  void setForceControlledAxis(const Matrix6d& Tr_new, int n_af);
+  int step(double* pose_to_send);
   void reset();
   void displayStates();
 
@@ -62,7 +61,7 @@ struct ForceControlController::Implementation
   Vector6d wrench_T_Err_prev{};
   Vector6d wrench_T_Err_I{};
 
-  Vector6d wrench_T_fb{}; // force feedback measured in tool frame
+  Vector6d wrench_T_fb{};  // force feedback measured in tool frame
   Vector6d wrench_Tr_cmd{};
   Vector6d wrench_T_spring{};
   Vector6d wrench_Tr_spring{};
@@ -82,24 +81,21 @@ struct ForceControlController::Implementation
 
 ForceControlController::Implementation::Implementation() {}
 
-ForceControlController::Implementation::~Implementation()
-{
+ForceControlController::Implementation::~Implementation() {
   if (config.log_to_file)
     log_file.close();
 }
 
 bool ForceControlController::Implementation::initialize(
-    const ForceControlControllerConfig &force_control_controller_config,
-    const RUT::TimePoint &time_initial_0, const double *pose_current)
-{
+    const ForceControlControllerConfig& force_control_controller_config,
+    const RUT::TimePoint& time_initial_0, const double* pose_current) {
   std::cout << "[ForceControlController] Begin initialization.\n";
   config = force_control_controller_config;
   timer.tic(time_initial_0);
 
   reset();
 
-  if (config.log_to_file)
-  {
+  if (config.log_to_file) {
     log_file.open(config.log_file_path);
     if (log_file.is_open())
       std::cout << "[ForceControlController] log file opened successfully at "
@@ -112,8 +108,7 @@ bool ForceControlController::Implementation::initialize(
 }
 
 void ForceControlController::Implementation::setRobotStatus(
-    const double *pose_WT, const double *wrench_WT)
-{
+    const double* pose_WT, const double* wrench_WT) {
   SE3_WT = RUT::posemm2SE3(pose_WT);
   wrench_T_fb(0) = -wrench_WT[0];
   wrench_T_fb(1) = -wrench_WT[1];
@@ -124,8 +119,7 @@ void ForceControlController::Implementation::setRobotStatus(
 }
 
 void ForceControlController::Implementation::setRobotReference(
-    const double *pose_WT, const double *wrench_WTr)
-{
+    const double* pose_WT, const double* wrench_WTr) {
   SE3_WTref = RUT::posemm2SE3(pose_WT);
 
   wrench_Tr_cmd(0) = wrench_WTr[0];
@@ -140,12 +134,10 @@ void ForceControlController::Implementation::setRobotReference(
 // in the new velocity controlled axes. To satisfy this requirement, we need to
 // change SE3_TrefTadj accordingly
 void ForceControlController::Implementation::setForceControlledAxis(
-    const Matrix6d &Tr_new, int n_af)
-{
+    const Matrix6d& Tr_new, int n_af) {
   v_force_selection = Vector6d::Zero();
   v_velocity_selection = Vector6d::Ones();
-  for (int i = 0; i < n_af; ++i)
-  {
+  for (int i = 0; i < n_af; ++i) {
     v_force_selection(i) = 1;
     v_velocity_selection(i) = 0;
   }
@@ -165,21 +157,15 @@ void ForceControlController::Implementation::setForceControlledAxis(
   Tr = Tr_new;
   Tr_inv = Tr.inverse();
 
-  if (std::isnan(SE3_TrefTadj(0, 0)))
-  {
+  if (std::isnan(SE3_TrefTadj(0, 0))) {
     std::cerr << "\nThe computed offset has NaN." << std::endl;
-    std::cerr << "SE3_WT:\n"
-              << SE3_WT.format(MatlabFmt) << std::endl;
-    std::cerr << "SE3_TTadj:\n"
-              << SE3_TTadj.format(MatlabFmt) << std::endl;
-    std::cerr << "spt_TTadj:\n"
-              << spt_TTadj.format(MatlabFmt) << std::endl;
+    std::cerr << "SE3_WT:\n" << SE3_WT.format(MatlabFmt) << std::endl;
+    std::cerr << "SE3_TTadj:\n" << SE3_TTadj.format(MatlabFmt) << std::endl;
+    std::cerr << "spt_TTadj:\n" << spt_TTadj.format(MatlabFmt) << std::endl;
     std::cerr << "Jac_v_spt_inv:\n"
               << Jac_v_spt_inv.format(MatlabFmt) << std::endl;
-    std::cerr << "Jac_v_spt:\n"
-              << Jac_v_spt.format(MatlabFmt) << std::endl;
-    std::cerr << "m_anni:\n"
-              << m_anni.format(MatlabFmt) << std::endl;
+    std::cerr << "Jac_v_spt:\n" << Jac_v_spt.format(MatlabFmt) << std::endl;
+    std::cerr << "m_anni:\n" << m_anni.format(MatlabFmt) << std::endl;
     std::cerr << "spt_TTadj_new:\n"
               << spt_TTadj_new.format(MatlabFmt) << std::endl;
     std::cerr << "SE3_TrefTadj:\n"
@@ -217,14 +203,13 @@ void ForceControlController::Implementation::setForceControlledAxis(
  *
  */
 // clang-format on
-int ForceControlController::Implementation::step(double *pose_to_send)
-{
+int ForceControlController::Implementation::step(double* pose_to_send) {
   // ----------------------------------------
   //  Compute Forces in Generalized space
   // ----------------------------------------
   /* Position updates */
   SE3_WTadj = SE3_TrefTadj * SE3_WTref;
-  SE3_TTadj = RUT::SE3Inv(SE3_WT) * SE3_WTadj; // aka SE3_S_err
+  SE3_TTadj = RUT::SE3Inv(SE3_WT) * SE3_WTadj;  // aka SE3_S_err
   spt_TTadj = RUT::SE32spt(SE3_TTadj);
 
   Jac_v_spt_inv = RUT::JacobianSpt2BodyV(SE3_WT.block<3, 3>(0, 0));
@@ -290,11 +275,11 @@ int ForceControlController::Implementation::step(double *pose_to_send)
   // Newton's law
   v_Tr += config.dt * vd_Tr;
   v_Tr = diag_force_selection *
-         v_Tr; // clean up velocity in the velocity-controlled direction
+         v_Tr;  // clean up velocity in the velocity-controlled direction
 
   // Velocity in the velocity-controlled direction: derive from reference pose
   v_body_WT_ref = Jac_v_spt_inv * spt_TTadj /
-                  config.dt; // reference velocity, derived from reference pose
+                  config.dt;  // reference velocity, derived from reference pose
   v_Tr += diag_velocity_selection * Tr * v_body_WT_ref;
 
   v_spatial_WT = Adj_WT * Tr_inv * v_Tr;
@@ -307,8 +292,7 @@ int ForceControlController::Implementation::step(double *pose_to_send)
 
   double timenow = timer.toc_ms();
 
-  if (std::isnan(pose_to_send[0]))
-  {
+  if (std::isnan(pose_to_send[0])) {
     std::cerr << "==================== pose is nan. =====================\n";
     displayStates();
     std::cerr << "Press ENTER to continue..." << std::endl;
@@ -318,8 +302,7 @@ int ForceControlController::Implementation::step(double *pose_to_send)
 
   std::cout << "[ForceControlController] Update at " << timenow << " ms."
             << std::endl;
-  if (config.log_to_file)
-  {
+  if (config.log_to_file) {
     log_file << timenow << " ";
     RUT::stream_array_in(log_file, SE3_WT.block<3, 1>(0, 3), 3);
     RUT::stream_array_in(log_file, SE3_WTref.block<3, 1>(0, 3), 3);
@@ -331,8 +314,7 @@ int ForceControlController::Implementation::step(double *pose_to_send)
   return true;
 }
 
-void ForceControlController::Implementation::reset()
-{
+void ForceControlController::Implementation::reset() {
   Tr = Matrix6d::Identity();
   Tr_inv = Matrix6d::Identity();
   v_force_selection = Vector6d::Zero();
@@ -376,8 +358,7 @@ void ForceControlController::Implementation::reset()
   wrench_Tr_All = Vector6d::Zero();
 }
 
-void ForceControlController::Implementation::displayStates()
-{
+void ForceControlController::Implementation::displayStates() {
   std::cout << "================= Parameters ================== " << std::endl;
   std::cout << "dt: " << config.dt << std::endl;
   std::cout << "log_to_file: " << config.log_to_file << std::endl;
@@ -465,18 +446,16 @@ ForceControlController::ForceControlController()
     : m_impl{std::make_unique<Implementation>()} {}
 ForceControlController::~ForceControlController() = default;
 
-bool ForceControlController::init(const ForceControlControllerConfig &config,
-                                  const RUT::TimePoint &time0,
-                                  const double *pose_current)
-{
+bool ForceControlController::init(const ForceControlControllerConfig& config,
+                                  const RUT::TimePoint& time0,
+                                  const double* pose_current) {
   m_impl->initialize(config, time0, pose_current);
 
-  double *wrench_zero = new double[6];
-  for (int i = 0; i < 6; ++i)
-  {
+  double* wrench_zero = new double[6];
+  for (int i = 0; i < 6; ++i) {
     wrench_zero[i] = 0.;
   }
-  double *pose_out = new double[6];
+  double* pose_out = new double[6];
   setRobotStatus(pose_current, wrench_zero);
   setRobotReference(pose_current, wrench_zero);
   step(pose_out);
@@ -486,25 +465,21 @@ bool ForceControlController::init(const ForceControlControllerConfig &config,
   return true;
 }
 
-void ForceControlController::setRobotStatus(const double *pose_WT,
-                                            const double *wrench_WT)
-{
+void ForceControlController::setRobotStatus(const double* pose_WT,
+                                            const double* wrench_WT) {
   m_impl->setRobotStatus(pose_WT, wrench_WT);
 }
 
-void ForceControlController::setRobotReference(const double *pose_WT,
-                                               const double *wrench_WTr)
-{
+void ForceControlController::setRobotReference(const double* pose_WT,
+                                               const double* wrench_WTr) {
   m_impl->setRobotReference(pose_WT, wrench_WTr);
 }
 
-void ForceControlController::setForceControlledAxis(const Matrix6d &Tr_new,
-                                                    int n_af)
-{
+void ForceControlController::setForceControlledAxis(const Matrix6d& Tr_new,
+                                                    int n_af) {
   m_impl->setForceControlledAxis(Tr_new, n_af);
 }
 
-int ForceControlController::step(double *pose_to_send)
-{
+int ForceControlController::step(double* pose_to_send) {
   return m_impl->step(pose_to_send);
 }
