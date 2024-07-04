@@ -1,6 +1,6 @@
 #include <RobotUtilities/TimerLinux.h>
 #include <RobotUtilities/utilities.h>
-#include <force_control/force_control_controller.h>
+#include <force_control/admittance_controller.h>
 
 #include <Eigen/QR>
 #include <cmath>
@@ -15,11 +15,11 @@ using RUT::Vector6d;
 Eigen::IOFormat MatlabFmt(Eigen::StreamPrecision, 0, ", ", ";\n", "", "", "[",
                           "]");
 
-struct ForceControlController::Implementation {
+struct AdmittanceController::Implementation {
   Implementation();
   ~Implementation();
   bool initialize(
-      const ForceControlControllerConfig& force_control_controller_config,
+      const AdmittanceControllerConfig& admittance_controller_config,
       const RUT::TimePoint& time_initial_0, const double* pose_current);
 
   void setRobotStatus(const double* pose_WT, const double* wrench_WT);
@@ -29,7 +29,7 @@ struct ForceControlController::Implementation {
   void reset();
   void displayStates();
 
-  ForceControlControllerConfig config{};
+  AdmittanceControllerConfig config{};
 
   // internal controller states
   Matrix6d Tr{};
@@ -79,18 +79,18 @@ struct ForceControlController::Implementation {
   std::ofstream log_file{};
 };
 
-ForceControlController::Implementation::Implementation() {}
+AdmittanceController::Implementation::Implementation() {}
 
-ForceControlController::Implementation::~Implementation() {
+AdmittanceController::Implementation::~Implementation() {
   if (config.log_to_file)
     log_file.close();
 }
 
-bool ForceControlController::Implementation::initialize(
-    const ForceControlControllerConfig& force_control_controller_config,
+bool AdmittanceController::Implementation::initialize(
+    const AdmittanceControllerConfig& admittance_controller_config,
     const RUT::TimePoint& time_initial_0, const double* pose_current) {
-  std::cout << "[ForceControlController] Begin initialization.\n";
-  config = force_control_controller_config;
+  std::cout << "[AdmittanceController] Begin initialization.\n";
+  config = admittance_controller_config;
   timer.tic(time_initial_0);
 
   reset();
@@ -98,16 +98,16 @@ bool ForceControlController::Implementation::initialize(
   if (config.log_to_file) {
     log_file.open(config.log_file_path);
     if (log_file.is_open())
-      std::cout << "[ForceControlController] log file opened successfully at "
+      std::cout << "[AdmittanceController] log file opened successfully at "
                 << config.log_file_path << std::endl;
     else
-      std::cerr << "[ForceControlController] Failed to open log file at "
+      std::cerr << "[AdmittanceController] Failed to open log file at "
                 << config.log_file_path << std::endl;
   }
   return true;
 }
 
-void ForceControlController::Implementation::setRobotStatus(
+void AdmittanceController::Implementation::setRobotStatus(
     const double* pose_WT, const double* wrench_WT) {
   SE3_WT = RUT::posemm2SE3(pose_WT);
   wrench_T_fb(0) = -wrench_WT[0];
@@ -118,7 +118,7 @@ void ForceControlController::Implementation::setRobotStatus(
   wrench_T_fb(5) = -wrench_WT[5];
 }
 
-void ForceControlController::Implementation::setRobotReference(
+void AdmittanceController::Implementation::setRobotReference(
     const double* pose_WT, const double* wrench_WTr) {
   SE3_WTref = RUT::posemm2SE3(pose_WT);
 
@@ -133,7 +133,7 @@ void ForceControlController::Implementation::setRobotReference(
 // After axis update, the goal pose with offset should be equal to current pose
 // in the new velocity controlled axes. To satisfy this requirement, we need to
 // change SE3_TrefTadj accordingly
-void ForceControlController::Implementation::setForceControlledAxis(
+void AdmittanceController::Implementation::setForceControlledAxis(
     const Matrix6d& Tr_new, int n_af) {
   v_force_selection = Vector6d::Zero();
   v_velocity_selection = Vector6d::Ones();
@@ -203,7 +203,7 @@ void ForceControlController::Implementation::setForceControlledAxis(
  *
  */
 // clang-format on
-int ForceControlController::Implementation::step(double* pose_to_send) {
+int AdmittanceController::Implementation::step(double* pose_to_send) {
   // ----------------------------------------
   //  Compute Forces in Generalized space
   // ----------------------------------------
@@ -300,7 +300,7 @@ int ForceControlController::Implementation::step(double* pose_to_send) {
     return false;
   }
 
-  std::cout << "[ForceControlController] Update at " << timenow << " ms."
+  std::cout << "[AdmittanceController] Update at " << timenow << " ms."
             << std::endl;
   if (config.log_to_file) {
     log_file << timenow << " ";
@@ -314,7 +314,7 @@ int ForceControlController::Implementation::step(double* pose_to_send) {
   return true;
 }
 
-void ForceControlController::Implementation::reset() {
+void AdmittanceController::Implementation::reset() {
   Tr = Matrix6d::Identity();
   Tr_inv = Matrix6d::Identity();
   v_force_selection = Vector6d::Zero();
@@ -358,7 +358,7 @@ void ForceControlController::Implementation::reset() {
   wrench_Tr_All = Vector6d::Zero();
 }
 
-void ForceControlController::Implementation::displayStates() {
+void AdmittanceController::Implementation::displayStates() {
   std::cout << "================= Parameters ================== " << std::endl;
   std::cout << "dt: " << config.dt << std::endl;
   std::cout << "log_to_file: " << config.log_to_file << std::endl;
@@ -442,13 +442,13 @@ void ForceControlController::Implementation::displayStates() {
             << std::endl;
 }
 
-ForceControlController::ForceControlController()
+AdmittanceController::AdmittanceController()
     : m_impl{std::make_unique<Implementation>()} {}
-ForceControlController::~ForceControlController() = default;
+AdmittanceController::~AdmittanceController() = default;
 
-bool ForceControlController::init(const ForceControlControllerConfig& config,
-                                  const RUT::TimePoint& time0,
-                                  const double* pose_current) {
+bool AdmittanceController::init(const AdmittanceControllerConfig& config,
+                                const RUT::TimePoint& time0,
+                                const double* pose_current) {
   m_impl->initialize(config, time0, pose_current);
 
   double* wrench_zero = new double[6];
@@ -461,25 +461,25 @@ bool ForceControlController::init(const ForceControlControllerConfig& config,
   step(pose_out);
   setForceControlledAxis(Matrix6d::Identity(), 0);
 
-  std::cout << "[ForceControlController] initialization is done." << std::endl;
+  std::cout << "[AdmittanceController] initialization is done." << std::endl;
   return true;
 }
 
-void ForceControlController::setRobotStatus(const double* pose_WT,
-                                            const double* wrench_WT) {
+void AdmittanceController::setRobotStatus(const double* pose_WT,
+                                          const double* wrench_WT) {
   m_impl->setRobotStatus(pose_WT, wrench_WT);
 }
 
-void ForceControlController::setRobotReference(const double* pose_WT,
-                                               const double* wrench_WTr) {
+void AdmittanceController::setRobotReference(const double* pose_WT,
+                                             const double* wrench_WTr) {
   m_impl->setRobotReference(pose_WT, wrench_WTr);
 }
 
-void ForceControlController::setForceControlledAxis(const Matrix6d& Tr_new,
-                                                    int n_af) {
+void AdmittanceController::setForceControlledAxis(const Matrix6d& Tr_new,
+                                                  int n_af) {
   m_impl->setForceControlledAxis(Tr_new, n_af);
 }
 
-int ForceControlController::step(double* pose_to_send) {
+int AdmittanceController::step(double* pose_to_send) {
   return m_impl->step(pose_to_send);
 }

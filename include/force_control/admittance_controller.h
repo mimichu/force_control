@@ -1,6 +1,6 @@
 #pragma once
-#ifndef _FORCE_CONTROL_CONTROLLER_H_
-#define _FORCE_CONTROL_CONTROLLER_H_
+#ifndef _ADMITTANCE_CONTROLLER_H_
+#define _ADMITTANCE_CONTROLLER_H_
 
 #include <RobotUtilities/TimerLinux.h>
 #include <RobotUtilities/utilities.h>
@@ -10,9 +10,9 @@
 #include <deque>
 #include <fstream>
 
-class ForceControlController {
+class AdmittanceController {
  public:
-  struct ForceControlControllerConfig {
+  struct AdmittanceControllerConfig {
     double dt{};  // used for integration/differentiation
     bool log_to_file{false};
     std::string log_file_path{};
@@ -38,8 +38,8 @@ class ForceControlController {
     RUT::Vector6d direct_force_control_I_limit{};
   };
 
-  ForceControlController();
-  ~ForceControlController();
+  AdmittanceController();
+  ~AdmittanceController();
 
   /**
    * @brief      initialize the controller.
@@ -50,7 +50,7 @@ class ForceControlController {
    *
    * @return     True if successfully initialized.
    */
-  bool init(const ForceControlControllerConfig& config,
+  bool init(const AdmittanceControllerConfig& config,
             const RUT::TimePoint& time0, const double* pose_current);
 
   /**
@@ -98,4 +98,4 @@ class ForceControlController {
   std::unique_ptr<Implementation> m_impl;
 };
 
-#endif  // _FORCE_CONTROL_CONTROLLER_H_
+#endif  // _ADMITTANCE_CONTROLLER_H_

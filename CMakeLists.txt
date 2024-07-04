@@ -11,13 +11,13 @@ include_directories(
 find_library(TIMER_LIB TimerLinux HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 find_library(RUT Utilities HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 
-add_library(force_control_controller src/force_control_controller.cpp)
-target_link_libraries(force_control_controller ${RUT})
+add_library(FORCE_CONTROLLERS src/admittance_controller.cpp)
+target_link_libraries(FORCE_CONTROLLERS ${RUT})
 
 install(DIRECTORY include/
   DESTINATION ${CMAKE_INSTALL_PREFIX}/include/
 )
 
-install(TARGETS force_control_controller
+install(TARGETS FORCE_CONTROLLERS
   DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/
 )
