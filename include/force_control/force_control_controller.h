@@ -10,14 +10,17 @@
 #include <deque>
 #include <fstream>
 
-class ForceControlController {
- public:
-  struct ForceControlControllerConfig {
-    double dt{};  // used for integration/differentiation
+class ForceControlController
+{
+public:
+  struct ForceControlControllerConfig
+  {
+    double dt{}; // used for integration/differentiation
     bool log_to_file{false};
     std::string log_file_path{};
 
-    struct ComplianceParameters6d {
+    struct ComplianceParameters6d
+    {
       // Admittance parameters
       RUT::Matrix6d stiffness{};
       RUT::Matrix6d damping{};
@@ -25,7 +28,8 @@ class ForceControlController {
     };
     ComplianceParameters6d compliance6d{};
 
-    struct PIDGains {
+    struct PIDGains
+    {
       double P_trans{};
       double I_trans{};
       double D_trans{};
@@ -36,14 +40,6 @@ class ForceControlController {
     };
     PIDGains direct_force_control_gains{};
     RUT::Vector6d direct_force_control_I_limit{};
-
-    struct MotionPlanningParameters {
-      double max_translation_vel_mm_s;
-      double max_translation_acc_mm_s2;
-      double max_rotation_vel_rad_s;
-      double max_rotation_acc_rad_s2;
-    };
-    MotionPlanningParameters motion_planning_parameters{};
   };
 
   ForceControlController();
@@ -101,9 +97,9 @@ class ForceControlController {
    */
   void reset();
 
- private:
+private:
   struct Implementation;
   std::unique_ptr<Implementation> m_impl;
 };
 
-#endif  // _FORCE_CONTROL_CONTROLLER_H_
+#endif // _FORCE_CONTROL_CONTROLLER_H_
