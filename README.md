@@ -1,48 +1,131 @@
 # force_control
+Implementations of 6D Cartesian space admittance control. Supports hybrid force-velocity control.
 
-Implementation of 6D Cartesian space hybrid force-velocity control using positional inner loop and wrist mounted FT sensor.
+The algorithm creates a virtual spring-mass-damper system using a position controlled robot. You can specify the following parameters:
+* 6x6 stiffness matrix, inertia matrix, damper matrix.
+You can update the following online:
+* Direction and dimension of force (soft) and position (rigid) control axes
+
+Hardware requirements:
+* A robot arm with high accuracy (high stiffness) position control interface.
+* A wrist mounted FT sensor.
 
 Author: Yifan Hou
-yifanh at cmu dot edu
+yifanhou at stanford dot edu
 
 # Install
 ## Dependency
 Please install the following packages:
 * [cpplibrary](https://github.com/yifan-hou/cpplibrary)
-* [hardware_interfaces](https://github.com/yifan-hou/hardware_interfaces) Note: this is NOT ROSControl!
 
 ## Build
-This is a ROS package. Clone this repo into your catkin workspace source folder, then compile.
+``` sh
+cd force_control
+mkdir build && cd build
+cmake ..
+make -j
+make install
+```
 
 # How to use
-Refer to `test/main.cpp` for an example.
+## Use with cmake
+``` makefile
+# replace ${CMAKE_INSTALL_PREFIX} with your install location
+find_library(FORCE_CONTROLLERS FORCE_CONTROLLERS HINTS ${CMAKE_INSTALL_PREFIX}/lib/)
+find_library(RUT Utilities HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
+find_library(TIMER_LIB TimerLinux HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 
-In your own application, you should make a copy of your config file, and load your config file in your launch file.
-Examples of config file are in `config/` folder, examples of launch file are in `test/` folder.
+# your executable
+add_executable(force_control_demo src/main.cc)
+target_link_libraries(force_control_demo
+  ${RUT}
+  ${TIMER_LIB}
+  ${FORCE_CONTROLLERS}
+)
+```
 
-## Set force
-The force being set is in transformed space (if R_a=I, then in the Tool frame).
-It's the force felt by the outside from the robot. For example, if R_a=I, fz=10, the
-robot will move in the +Z direction in tool frame.
+## c++ code sketch
+Headers:
+``` c++
+#include <RobotUtilities/utilities.h>
+#include <force_control/admittance_controller.h>
 
-The logic for force control is as follows. (see update()).
-If the set force is larger than feedback(here the feedback is the force felt
-by the environment, not necessarily the original sensor reading), then f_TErr is
-positive, the pseudo spring-mass-damper will be pushed forward, which will
-create a larger force felt by the environment to make f_TErr smaller.
+typedef Eigen::Matrix<double, 6, 1> Vector6d;
+```
+Create the controller config, initialize controller:
+``` c++
+AdmittanceController::AdmittanceControllerConfig admittance_config;
+// populate admittance_config before using it
 
-Call controller.reset() before the first controller.update()
+AdmittanceController controller;
 
-## Get Position control
-If you want to disable force control in some direction, do the following in config file:
-1. Set the corresponding force_fb_selection to 0 (disable feedback)
-2. Set the corresponding stiffness to 0 (disable spring behavior)
+RUT::Timer timer;
+RUT::TimePoint time0 = timer.tic();
+RUT::Vector7d pose, pose_ref, pose_cmd;
+RUT::Vector6d wrench, wrench_WTr;
 
-## Change axis
-Before you call updateAxis(), make sure you already set the pose_set and force_set.
+controller.init(time0, admittance_config, pose);
+```
+Set force control axes and dimension. There are a couple options:
+``` c++
+// Regular admittance control, all 6 axes are force dimensions:
+RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
+int n_af = 6;
+controller.setForceControlledAxis(Tr, n_af);
+
+// HFVC, compliant translational motion, rigid rotation motion 
+RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
+int n_af = 6;
+controller.setForceControlledAxis(Tr, n_af);
+
+// HFVC, compliant rotational motion, rigid translational motion
+RUT::Matrix6d Tr;
+Tr << 0, 0, 0, 1, 0, 0,
+    0, 0, 0, 0, 1, 0,
+    0, 0, 0, 0, 0, 1,
+    1, 0, 0, 0, 0, 0,
+    0, 1, 0, 0, 0, 0,
+    0, 0, 1, 0, 0, 0;
+int n_af = 3;
+controller.setForceControlledAxis(Tr, n_af);
+
+// n_af = 0 disables compliance. All axes uses rigid motion
+RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
+int n_af = 0;
+controller.setForceControlledAxis(Tr, n_af);
+```
+Now we are ready to start the control loop. Assuming we have access to a `robot_ptr` object that can provides pose and wrench feedback.
+
+``` c++
+pose_ref = pose;
+wrench_WTr.setZero();
+
+timer.tic();
+
+while (true) {
+    // Update robot status
+    robot_ptr->getCartesian(pose);
+    robot_ptr->getWrenchTool(wrench);
+    controller.setRobotStatus(pose, wrench);
+
+    // Update robot reference
+    controller.setRobotReference(pose_ref, wrench_WTr);
+
+    // Compute the control output
+    controller.step(pose_cmd);
+
+    // send action to robot
+    robot_ptr->setCartesian(pose_cmd);
+    
+    // sleep till next iteration
+    spin();
+}
+```
 
 ## Reference
-The implementation was initially based on
-"Experience in Force Control of Robotic Manipulators", James A. Maples and Joseph J. Becker
 
-Then a lot more functionalities are added. Please contact yifan for questions.
+Y. Hou and M. T. Mason, "Robust Execution of Contact-Rich Motion Plans by Hybrid Force-Velocity Control,"
+2019 International Conference on Robotics and Automation (ICRA), Montreal, QC, Canada, 2019, pp. 1933-1939
+
+The package was initially implemented based on James A. Maples and Joseph J. Becker, "Experience in Force Control of Robotic Manipulators", 
+Then a lot more functionalities were added. Please contact yifan for questions.
