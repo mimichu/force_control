@@ -19,13 +19,15 @@ struct AdmittanceController::Implementation {
   Implementation();
   ~Implementation();
   bool initialize(
-      const AdmittanceControllerConfig& admittance_controller_config,
-      const RUT::TimePoint& time_initial_0, const double* pose_current);
+      const RUT::TimePoint& time_initial_0,
+      const AdmittanceControllerConfig& admittance_controller_config);
 
-  void setRobotStatus(const double* pose_WT, const double* wrench_WT);
-  void setRobotReference(const double* pose_WT, const double* wrench_WTr);
+  void setRobotStatus(const RUT::Vector7d& pose_WT,
+                      const RUT::Vector6d& wrench_WT);
+  void setRobotReference(const RUT::Vector7d& pose_WT,
+                         const RUT::Vector6d& wrench_WTr);
   void setForceControlledAxis(const Matrix6d& Tr_new, int n_af);
-  int step(double* pose_to_send);
+  int step(RUT::Vector7d& pose_to_send);
   void reset();
   void displayStates();
 
@@ -87,8 +89,8 @@ AdmittanceController::Implementation::~Implementation() {
 }
 
 bool AdmittanceController::Implementation::initialize(
-    const AdmittanceControllerConfig& admittance_controller_config,
-    const RUT::TimePoint& time_initial_0, const double* pose_current) {
+    const RUT::TimePoint& time_initial_0,
+    const AdmittanceControllerConfig& admittance_controller_config) {
   std::cout << "[AdmittanceController] Begin initialization.\n";
   config = admittance_controller_config;
   timer.tic(time_initial_0);
@@ -108,26 +110,15 @@ bool AdmittanceController::Implementation::initialize(
 }
 
 void AdmittanceController::Implementation::setRobotStatus(
-    const double* pose_WT, const double* wrench_WT) {
-  SE3_WT = RUT::posemm2SE3(pose_WT);
-  wrench_T_fb(0) = -wrench_WT[0];
-  wrench_T_fb(1) = -wrench_WT[1];
-  wrench_T_fb(2) = -wrench_WT[2];
-  wrench_T_fb(3) = -wrench_WT[3];
-  wrench_T_fb(4) = -wrench_WT[4];
-  wrench_T_fb(5) = -wrench_WT[5];
+    const RUT::Vector7d& pose_WT, const RUT::Vector6d& wrench_WT) {
+  SE3_WT = RUT::pose2SE3(pose_WT);
+  wrench_T_fb = -wrench_WT;
 }
 
 void AdmittanceController::Implementation::setRobotReference(
-    const double* pose_WT, const double* wrench_WTr) {
-  SE3_WTref = RUT::posemm2SE3(pose_WT);
-
-  wrench_Tr_cmd(0) = wrench_WTr[0];
-  wrench_Tr_cmd(1) = wrench_WTr[1];
-  wrench_Tr_cmd(2) = wrench_WTr[2];
-  wrench_Tr_cmd(3) = wrench_WTr[3];
-  wrench_Tr_cmd(4) = wrench_WTr[4];
-  wrench_Tr_cmd(5) = wrench_WTr[5];
+    const RUT::Vector7d& pose_WT, const RUT::Vector6d& wrench_WTr) {
+  SE3_WTref = RUT::pose2SE3(pose_WT);
+  wrench_Tr_cmd = wrench_WTr;
 }
 
 // After axis update, the goal pose with offset should be equal to current pose
@@ -182,7 +173,7 @@ void AdmittanceController::Implementation::setForceControlledAxis(
         Frames:
             W: world frame
             T: current tool frame
-            Tr: transformed generalized space
+            Tr: transformed genepose_currentralized space
         Frame suffixes
             fb: feedback (default, often omitted)
             ref: user provided reference, target
@@ -203,7 +194,7 @@ void AdmittanceController::Implementation::setForceControlledAxis(
  *
  */
 // clang-format on
-int AdmittanceController::Implementation::step(double* pose_to_send) {
+int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
   // ----------------------------------------
   //  Compute Forces in Generalized space
   // ----------------------------------------
@@ -288,7 +279,7 @@ int AdmittanceController::Implementation::step(double* pose_to_send) {
   //  velocity to pose
   // ----------------------------------------
   SE3_WT_cmd = SE3_WT + RUT::wedge6(v_spatial_WT) * SE3_WT * config.dt;
-  RUT::SE32Posemm(SE3_WT_cmd, pose_to_send);
+  RUT::SE32Pose(SE3_WT_cmd, pose_to_send);
 
   double timenow = timer.toc_ms();
 
@@ -300,8 +291,6 @@ int AdmittanceController::Implementation::step(double* pose_to_send) {
     return false;
   }
 
-  std::cout << "[AdmittanceController] Update at " << timenow << " ms."
-            << std::endl;
   if (config.log_to_file) {
     log_file << timenow << " ";
     RUT::stream_array_in(log_file, SE3_WT.block<3, 1>(0, 3), 3);
@@ -446,18 +435,15 @@ AdmittanceController::AdmittanceController()
     : m_impl{std::make_unique<Implementation>()} {}
 AdmittanceController::~AdmittanceController() = default;
 
-bool AdmittanceController::init(const AdmittanceControllerConfig& config,
-                                const RUT::TimePoint& time0,
-                                const double* pose_current) {
-  m_impl->initialize(config, time0, pose_current);
+bool AdmittanceController::init(const RUT::TimePoint& time0,
+                                const AdmittanceControllerConfig& config,
+                                const RUT::Vector7d& pose_current) {
+  m_impl->initialize(time0, config);
 
-  double* wrench_zero = new double[6];
-  for (int i = 0; i < 6; ++i) {
-    wrench_zero[i] = 0.;
-  }
-  double* pose_out = new double[6];
-  setRobotStatus(pose_current, wrench_zero);
-  setRobotReference(pose_current, wrench_zero);
+  setRobotStatus(pose_current, RUT::Vector6d::Zero());
+  setRobotReference(pose_current, RUT::Vector6d::Zero());
+
+  RUT::Vector7d pose_out;
   step(pose_out);
   setForceControlledAxis(Matrix6d::Identity(), 0);
 
@@ -465,13 +451,13 @@ bool AdmittanceController::init(const AdmittanceControllerConfig& config,
   return true;
 }
 
-void AdmittanceController::setRobotStatus(const double* pose_WT,
-                                          const double* wrench_WT) {
+void AdmittanceController::setRobotStatus(const RUT::Vector7d& pose_WT,
+                                          const RUT::Vector6d& wrench_WT) {
   m_impl->setRobotStatus(pose_WT, wrench_WT);
 }
 
-void AdmittanceController::setRobotReference(const double* pose_WT,
-                                             const double* wrench_WTr) {
+void AdmittanceController::setRobotReference(const RUT::Vector7d& pose_WT,
+                                             const RUT::Vector6d& wrench_WTr) {
   m_impl->setRobotReference(pose_WT, wrench_WTr);
 }
 
@@ -480,6 +466,6 @@ void AdmittanceController::setForceControlledAxis(const Matrix6d& Tr_new,
   m_impl->setForceControlledAxis(Tr_new, n_af);
 }
 
-int AdmittanceController::step(double* pose_to_send) {
+int AdmittanceController::step(RUT::Vector7d& pose_to_send) {
   return m_impl->step(pose_to_send);
 }

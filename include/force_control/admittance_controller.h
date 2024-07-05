@@ -13,9 +13,9 @@
 class AdmittanceController {
  public:
   struct AdmittanceControllerConfig {
-    double dt{};  // used for integration/differentiation
+    double dt{0.002};  // used for integration/differentiation
     bool log_to_file{false};
-    std::string log_file_path{};
+    std::string log_file_path{""};
 
     struct ComplianceParameters6d {
       // Admittance parameters
@@ -26,13 +26,13 @@ class AdmittanceController {
     ComplianceParameters6d compliance6d{};
 
     struct PIDGains {
-      double P_trans{};
-      double I_trans{};
-      double D_trans{};
+      double P_trans{0.0};
+      double I_trans{0.0};
+      double D_trans{0.0};
 
-      double P_rot{};
-      double I_rot{};
-      double D_rot{};
+      double P_rot{0.0};
+      double I_rot{0.0};
+      double D_rot{0.0};
     };
     PIDGains direct_force_control_gains{};
     RUT::Vector6d direct_force_control_I_limit{};
@@ -44,14 +44,15 @@ class AdmittanceController {
   /**
    * @brief      initialize the controller.
    *
-   * @param[in]  config        The struct contains all configs.
    * @param[in]  time0         The time point to start ticking from.
+   * @param[in]  config        The struct contains all configs.
    * @param[in]  pose_current  The current robot pose (tool frame)
    *
    * @return     True if successfully initialized.
    */
-  bool init(const AdmittanceControllerConfig& config,
-            const RUT::TimePoint& time0, const double* pose_current);
+  bool init(const RUT::TimePoint& time0,
+            const AdmittanceControllerConfig& config,
+            const RUT::Vector7d& pose_current);
 
   /**
    * @brief      Sets the robot status.
@@ -59,7 +60,8 @@ class AdmittanceController {
    * @param[in]  pose_WT    The current tool frame pose in the world frame.
    * @param[in]  wrench_WT  The tool wrench feedback.
    */
-  void setRobotStatus(const double* pose_WT, const double* wrench_T);
+  void setRobotStatus(const RUT::Vector7d& pose_WT,
+                      const RUT::Vector6d& wrench_T);
   /**
    * @brief      Set the position and force reference (user command).
    *
@@ -70,7 +72,8 @@ class AdmittanceController {
    * setForceControlledAxis. step() will properly update internal states, which
    * is required for setForceControlledAxis to work properly.
    */
-  void setRobotReference(const double* pose_WT, const double* wrench_WTr);
+  void setRobotReference(const RUT::Vector7d& pose_WT,
+                         const RUT::Vector6d& wrench_WTr);
   /**
    * @brief      Sets the force controlled axis.
    *
@@ -81,7 +84,7 @@ class AdmittanceController {
   /**
    * @brief return true if no error.
    */
-  int step(double* pose);
+  int step(RUT::Vector7d& pose);
 
   /**
    * @brief      Reset all internal states to default. It is recommended to call
