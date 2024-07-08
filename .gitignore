@@ -1,3 +1,4 @@
 test/data/*.txt
 .vscode/
 *sublime*
+build/

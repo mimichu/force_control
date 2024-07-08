@@ -8,11 +8,12 @@ include_directories(
   /usr/include/eigen3
 )
 
+find_library(YAMLLib yaml-cpp HINTS /usr/local/lib)
 find_library(TIMER_LIB TimerLinux HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 find_library(RUT Utilities HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 
-add_library(FORCE_CONTROLLERS src/admittance_controller.cpp)
-target_link_libraries(FORCE_CONTROLLERS ${RUT})
+add_library(FORCE_CONTROLLERS src/admittance_controller.cpp src/config_deserialize.cpp)
+  target_link_libraries(FORCE_CONTROLLERS ${RUT} ${YAMLLib})
 
 install(DIRECTORY include/
   DESTINATION ${CMAKE_INSTALL_PREFIX}/include/
