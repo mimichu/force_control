@@ -21,6 +21,8 @@ bool deserialize(const YAML::Node& node,
     config.compliance6d.inertia =
         RUT::deserialize_vector<RUT::Vector6d>(node["compliance6d"]["inertia"])
             .asDiagonal();
+    config.max_spring_force_magnitude =
+        node["max_spring_force_magnitude"].as<double>();
     config.direct_force_control_gains.P_trans =
         node["direct_force_control_gains"]["P_trans"].as<double>();
     config.direct_force_control_gains.I_trans =

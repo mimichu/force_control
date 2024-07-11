@@ -59,6 +59,7 @@ struct AdmittanceController::Implementation {
   void setRobotReference(const RUT::Vector7d& pose_WT,
                          const RUT::Vector6d& wrench_WTr);
   void setForceControlledAxis(const Matrix6d& Tr_new, int n_af);
+  void setStiffnessMatrix(const Matrix6d& stiffness);
   int step(RUT::Vector7d& pose_to_send);
   void reset();
   void displayStates();
@@ -198,6 +199,11 @@ void AdmittanceController::Implementation::setForceControlledAxis(
   }
 }
 
+void AdmittanceController::Implementation::setStiffnessMatrix(
+    const Matrix6d& stiffness) {
+  config.compliance6d.stiffness = stiffness;
+}
+
 // clang-format off
 /*
  *
@@ -247,6 +253,16 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
 
   /* Wrench updates */
   wrench_T_spring = Jac_v_spt * config.compliance6d.stiffness * spt_TTadj;
+
+  // clip spring force
+  if (config.max_spring_force_magnitude > 0) {
+    double spring_force_magnitude = wrench_T_spring.norm();
+    if (spring_force_magnitude > config.max_spring_force_magnitude) {
+      wrench_T_spring *=
+          config.max_spring_force_magnitude / spring_force_magnitude;
+    }
+  }
+
   wrench_Tr_spring = Tr * wrench_T_spring;
 
   /* Force error, PID force control */
@@ -496,6 +512,10 @@ void AdmittanceController::setRobotReference(const RUT::Vector7d& pose_WT,
 void AdmittanceController::setForceControlledAxis(const Matrix6d& Tr_new,
                                                   int n_af) {
   m_impl->setForceControlledAxis(Tr_new, n_af);
+}
+
+void AdmittanceController::setStiffnessMatrix(const Matrix6d& stiffness) {
+  m_impl->setStiffnessMatrix(stiffness);
 }
 
 int AdmittanceController::step(RUT::Vector7d& pose_to_send) {
