@@ -62,6 +62,7 @@ struct AdmittanceController::Implementation {
   void setStiffnessMatrix(const Matrix6d& stiffness);
   int step(RUT::Vector7d& pose_to_send);
   void reset();
+  void logStates();
   void displayStates();
 
   AdmittanceControllerConfig config{};
@@ -340,13 +341,7 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
   }
 
   if (config.log_to_file) {
-    log_file << timenow << " ";
-    RUT::stream_array_in(log_file, SE3_WT.block<3, 1>(0, 3), 3);
-    RUT::stream_array_in(log_file, SE3_WTref.block<3, 1>(0, 3), 3);
-    RUT::stream_array_in6d(log_file, wrench_T_fb);
-    RUT::stream_array_in6d(log_file, wrench_Tr_All);
-    RUT::stream_array_in(log_file, pose_to_send, 7);
-    log_file << std::endl;
+    logStates();
   }
   return true;
 }
@@ -393,6 +388,48 @@ void AdmittanceController::Implementation::reset() {
   wrench_Tr_Err = Vector6d::Zero();
   wrench_Tr_damping = Vector6d::Zero();
   wrench_Tr_All = Vector6d::Zero();
+}
+
+void AdmittanceController::Implementation::logStates() {
+  log_file << timer.toc_ms() << " ";
+  RUT::stream_array_in(log_file, SE3_WTref.block<3, 1>(0, 3), 3);
+  RUT::stream_array_in(log_file, SE3_WT.block<3, 1>(0, 3), 3);
+  RUT::stream_array_in(log_file, SE3_WTadj.block<3, 1>(0, 3), 3);
+  RUT::stream_array_in(log_file, SE3_WT_cmd.block<3, 1>(0, 3), 3);
+  RUT::stream_array_in6d(log_file, wrench_T_fb);
+  RUT::stream_array_in6d(log_file, wrench_Tr_All);
+
+  // SE3_TrefTadj = Matrix4d::Identity();
+  // SE3_TTadj = Matrix4d::Identity();
+  // spt_TTadj = Vector6d::Zero();
+  // spt_TTadj_new = Vector6d::Zero();
+  // Adj_WT = Matrix6d::Identity();
+  // Adj_TW = Matrix6d::Identity();
+  // Jac_v_spt = Matrix6d::Identity();
+  // Jac_v_spt_inv = Matrix6d::Identity();
+
+  // v_spatial_WT = Vector6d::Zero();
+  // v_body_WT = Vector6d::Zero();
+  // v_body_WT_ref = Vector6d::Zero();
+  // v_Tr = Vector6d::Zero();
+  // vd_Tr = Vector6d::Zero();
+  // wrench_T_Err_prev = Vector6d::Zero();
+  // wrench_T_Err_I = Vector6d::Zero();
+
+  // wrench_T_fb = Vector6d::Zero();
+  // wrench_Tr_cmd = Vector6d::Zero();
+  // wrench_T_spring = Vector6d::Zero();
+  // wrench_Tr_spring = Vector6d::Zero();
+  // wrench_Tr_fb = Vector6d::Zero();
+  // wrench_T_cmd = Vector6d::Zero();
+  // wrench_T_Err = Vector6d::Zero();
+  // wrench_T_PID = Vector6d::Zero();
+  // wrench_Tr_PID = Vector6d::Zero();
+  // wrench_Tr_Err = Vector6d::Zero();
+  // wrench_Tr_damping = Vector6d::Zero();
+  // wrench_Tr_All = Vector6d::Zero();
+
+  log_file << std::endl;
 }
 
 void AdmittanceController::Implementation::displayStates() {
