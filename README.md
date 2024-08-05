@@ -33,13 +33,11 @@ make install
 # replace ${CMAKE_INSTALL_PREFIX} with your install location
 find_library(FORCE_CONTROLLERS FORCE_CONTROLLERS HINTS ${CMAKE_INSTALL_PREFIX}/lib/)
 find_library(RUT Utilities HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
-find_library(TIMER_LIB TimerLinux HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 
 # your executable
 add_executable(force_control_demo src/main.cc)
 target_link_libraries(force_control_demo
   ${RUT}
-  ${TIMER_LIB}
   ${FORCE_CONTROLLERS}
 )
 ```
@@ -47,7 +45,7 @@ target_link_libraries(force_control_demo
 ## c++ code sketch
 Headers:
 ``` c++
-#include <RobotUtilities/utilities.h>
+#include <RobotUtilities/spatial_utilities.h>
 #include <force_control/admittance_controller.h>
 
 typedef Eigen::Matrix<double, 6, 1> Vector6d;

@@ -1,5 +1,5 @@
 #include "force_control/config_deserialize.h"
-#include <RobotUtilities/utilities.h>
+#include <RobotUtilities/spatial_utilities.h>
 
 #include <yaml-cpp/yaml.h>
 

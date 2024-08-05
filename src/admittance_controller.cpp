@@ -30,8 +30,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include <RobotUtilities/TimerLinux.h>
-#include <RobotUtilities/utilities.h>
+#include <RobotUtilities/spatial_utilities.h>
+#include <RobotUtilities/timer_linux.h>
 #include <force_control/admittance_controller.h>
 
 #include <Eigen/QR>

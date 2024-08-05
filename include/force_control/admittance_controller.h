@@ -34,8 +34,8 @@ SOFTWARE.
 #ifndef _ADMITTANCE_CONTROLLER_H_
 #define _ADMITTANCE_CONTROLLER_H_
 
-#include <RobotUtilities/TimerLinux.h>
-#include <RobotUtilities/utilities.h>
+#include <RobotUtilities/spatial_utilities.h>
+#include <RobotUtilities/timer_linux.h>
 
 #include <Eigen/Geometry>
 #include <chrono>
