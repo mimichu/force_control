@@ -222,7 +222,6 @@ void AdmittanceController::Implementation::setStiffnessMatrix(
             SE3: 4x4 homogeneous coordinates
             se3: 6x1 twist coordinate of SE3
             spt: 6x1 special twist: 3x1 position, 3x1 exponential coordinate for rotation
-            td: 6x1 time derivative of twist.
             v: 6x1 velocity measured in an inertia frame.
               v_body: body velocity.
               v_spatial: spatial velocity.
@@ -238,7 +237,7 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
   //  Compute Forces in Generalized space
   // ----------------------------------------
   /* Position updates */
-  SE3_WTadj = SE3_TrefTadj * SE3_WTref;
+  SE3_WTadj = SE3_WTref * SE3_TrefTadj;
   SE3_TTadj = RUT::SE3Inv(SE3_WT) * SE3_WTadj;  // aka SE3_S_err
   spt_TTadj = RUT::SE32spt(SE3_TTadj);
 
