@@ -74,6 +74,7 @@ class AdmittanceController {
 
   AdmittanceController();
   ~AdmittanceController();
+  AdmittanceController(AdmittanceController&&);
 
   /**
    * @brief      initialize the controller.

@@ -112,6 +112,7 @@ struct AdmittanceController::Implementation {
 
   // misc
   RUT::Timer timer{};
+  RUT::Profiler profiler{};
   std::ofstream log_file{};
 };
 
@@ -233,6 +234,9 @@ void AdmittanceController::Implementation::setStiffnessMatrix(
  */
 // clang-format on
 int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
+  profiler.clear();
+  profiler.start();
+  timer.tic();
   // ----------------------------------------
   //  Compute Forces in Generalized space
   // ----------------------------------------
@@ -253,6 +257,8 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
 
   /* Wrench updates */
   wrench_T_spring = Jac_v_spt * config.compliance6d.stiffness * spt_TTadj;
+  profiler.stop("1");
+  profiler.start();
 
   // clip spring force
   if (config.max_spring_force_magnitude > 0) {
@@ -290,7 +296,8 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
 
   wrench_Tr_All = diag_force_selection * (wrench_Tr_spring + wrench_Tr_Err +
                                           wrench_Tr_PID + wrench_Tr_damping);
-
+  profiler.stop("2");
+  profiler.start();
   // ----------------------------------------
   //  force to velocity
   // ----------------------------------------
@@ -322,14 +329,13 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
   v_Tr += diag_velocity_selection * Tr * v_body_WT_ref;
 
   v_spatial_WT = Adj_WT * Tr_inv * v_Tr;
-
+  profiler.stop("3");
+  profiler.start();
   // ----------------------------------------
   //  velocity to pose
   // ----------------------------------------
   SE3_WT_cmd = SE3_WT + RUT::wedge6(v_spatial_WT) * SE3_WT * config.dt;
   RUT::SE32Pose(SE3_WT_cmd, pose_to_send);
-
-  double timenow = timer.toc_ms();
 
   if (std::isnan(pose_to_send[0])) {
     std::cerr << "==================== pose is nan. =====================\n";
@@ -338,10 +344,20 @@ int AdmittanceController::Implementation::step(RUT::Vector7d& pose_to_send) {
     getchar();
     return false;
   }
-
+  profiler.stop("4");
+  profiler.start();
   if (config.log_to_file) {
     logStates();
   }
+  profiler.stop("5");
+  double timenow = timer.toc_ms();
+  if (timenow > 2.0) {
+    std::cerr << "AdmittanceController: step took too long: " << timenow << "ms"
+              << std::endl;
+    std::cerr << "Profiler: " << std::endl;
+    profiler.show();
+  }
+
   return true;
 }
 
@@ -518,6 +534,7 @@ void AdmittanceController::Implementation::displayStates() {
 AdmittanceController::AdmittanceController()
     : m_impl{std::make_unique<Implementation>()} {}
 AdmittanceController::~AdmittanceController() = default;
+AdmittanceController::AdmittanceController(AdmittanceController&&) = default;
 
 bool AdmittanceController::init(const RUT::TimePoint& time0,
                                 const AdmittanceControllerConfig& config,
