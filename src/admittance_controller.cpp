@@ -60,6 +60,7 @@ struct AdmittanceController::Implementation {
                          const RUT::Vector6d& wrench_WTr);
   void setForceControlledAxis(const Matrix6d& Tr_new, int n_af);
   void setStiffnessMatrix(const Matrix6d& stiffness);
+  void setDampingMatrix(const Matrix6d& damping);
   int step(RUT::Vector7d& pose_to_send);
   void reset();
   void logStates();
@@ -204,6 +205,11 @@ void AdmittanceController::Implementation::setForceControlledAxis(
 void AdmittanceController::Implementation::setStiffnessMatrix(
     const Matrix6d& stiffness) {
   config.compliance6d.stiffness = stiffness;
+}
+
+void AdmittanceController::Implementation::setDampingMatrix(
+    const Matrix6d& damping) {
+  config.compliance6d.damping = damping;
 }
 
 // clang-format off
@@ -569,6 +575,10 @@ void AdmittanceController::setForceControlledAxis(const Matrix6d& Tr_new,
 
 void AdmittanceController::setStiffnessMatrix(const Matrix6d& stiffness) {
   m_impl->setStiffnessMatrix(stiffness);
+}
+
+void AdmittanceController::setDampingMatrix(const Matrix6d& damping) {
+  m_impl->setDampingMatrix(damping);
 }
 
 int AdmittanceController::step(RUT::Vector7d& pose_to_send) {

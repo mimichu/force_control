@@ -123,6 +123,14 @@ class AdmittanceController {
    * @param[in]  stiffness  The stiffness matrix.
    */
   void setStiffnessMatrix(const RUT::Matrix6d& stiffness);
+
+  /**
+   * @brief      Sets the damping matrix.
+   *
+   * @param[in]  damping  The damping matrix.
+   */
+  void setDampingMatrix(const RUT::Matrix6d& damping);
+
   /**
    * @brief return true if no error.
    */
