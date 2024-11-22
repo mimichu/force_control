@@ -3,9 +3,11 @@ project(force_control)
 
 add_definitions(-std=c++17)
 
+find_package(Eigen3 3.4 REQUIRED)
+include_directories(${EIGEN3_INCLUDE_DIR})
+
 include_directories(
   include
-  /usr/include/eigen3
 )
 
 find_library(YAMLLib yaml-cpp HINTS /usr/local/lib)
