@@ -42,5 +42,6 @@ bool deserialize(const YAML::Node& node,
     std::cerr << "Failed to load the config file: " << e.what() << std::endl;
     return false;
   }
+
   return true;
 }
