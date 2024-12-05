@@ -50,16 +50,3 @@ install(TARGETS FORCE_CONTROLLERS
 install(DIRECTORY include/
     DESTINATION ${CMAKE_INSTALL_PREFIX}/include
 )
-
-# Generate and install CMake config files
-include(CMakePackageConfigHelpers)
-configure_package_config_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/force_controlConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/force_controlConfig.cmake
-    INSTALL_DESTINATION lib/cmake/force_control
-)
-
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/force_controlConfig.cmake
-    DESTINATION lib/cmake/force_control
-)
